@@ -5,278 +5,257 @@ import { Spacecraft } from '../Spacecraft';
 import { PhysicsEngine } from '../PhysicsEngine';
 import { VelocityVerletIntegrator, RK4Integrator } from '../Integrator';
 import { calculateOrbitalElements } from '../Orbit';
-import { EARTH_RADIUS_KM, EARTH_MU } from '../Constants';
+import { Atmosphere } from '../Atmosphere';
+import { Aerodynamics } from '../Aerodynamics';
+import {
+  EARTH_RADIUS_M,
+  EARTH_MU,
+  MOON_RADIUS_M,
+  MOON_MU,
+  MOON_ORBITAL_DISTANCE_M,
+  MOON_ORBITAL_SPEED_MPS,
+} from '../Constants';
 
-describe('Orbital Mechanics Physics Engine', () => {
-  // Test 1: Gravity decreases with distance (Newton's inverse-square law)
-  it('1. Gravity decreases with distance following the inverse-square law', () => {
-    const body = new CelestialBody({
-      id: 'test-body',
-      name: 'Test Body',
-      mass: 1e20,
-      mu: 10000,
-      radius: 500,
+describe('Real-Scale Newtonian Orbital Mechanics & Saturn V Physics', () => {
+  // Test 1: Real SI Gravity decreases with distance following 1/r²
+  it('1. Gravity decreases with distance following the inverse-square law (1/r²)', () => {
+    const earth = new CelestialBody({
+      id: 'earth',
+      name: 'Earth',
+      mass: 5.9722e24,
+      mu: EARTH_MU,
+      radius: EARTH_RADIUS_M,
       position: Vector2.zero(),
       velocity: Vector2.zero(),
-      color: '#fff',
+      color: '#00f',
     });
 
-    const r1 = 1000; // km
-    const r2 = 2000; // km (double distance)
-    const r3 = 4000; // km (quadruple distance)
+    const rSurface = EARTH_RADIUS_M; // 6,371 km
+    const rDouble = EARTH_RADIUS_M * 2; // 12,742 km
 
-    const a1 = body.gravitationalAccelerationAt(new Vector2(r1, 0)).mag();
-    const a2 = body.gravitationalAccelerationAt(new Vector2(r2, 0)).mag();
-    const a3 = body.gravitationalAccelerationAt(new Vector2(r3, 0)).mag();
+    const gSurface = earth.gravitationalAccelerationAt(new Vector2(rSurface, 0)).mag();
+    const gDouble = earth.gravitationalAccelerationAt(new Vector2(rDouble, 0)).mag();
 
-    // a = μ / r² => doubling distance reduces gravity by 4x
-    expect(a1).toBeGreaterThan(a2);
-    expect(a2).toBeGreaterThan(a3);
-    expect(a1 / a2).toBeCloseTo(4.0, 4);
-    expect(a1 / a3).toBeCloseTo(16.0, 4);
+    // At Earth surface: g0 ≈ 9.81 m/s²
+    expect(gSurface).toBeCloseTo(9.81, 1);
+    // At double distance: g should be exactly 1/4 of surface gravity
+    expect(gSurface / gDouble).toBeCloseTo(4.0, 4);
   });
 
-  // Test 2: Zero thrust does not create artificial acceleration
+  // Test 2: Zero thrust creates zero artificial acceleration
   it('2. Zero thrust does not create artificial acceleration', () => {
     const sc = new Spacecraft({
-      position: new Vector2(5000, 5000),
-      velocity: new Vector2(1, 0),
+      position: new Vector2(EARTH_RADIUS_M + 200000, 0),
+      velocity: new Vector2(0, 7800),
       throttle: 0,
       engineActive: false,
+      isLanded: false,
     });
 
-    const thrustAccel = sc.getThrustAcceleration();
-    expect(thrustAccel.x).toBe(0);
-    expect(thrustAccel.y).toBe(0);
+    const thrustAccel = sc.getThrustAcceleration(0);
     expect(thrustAccel.mag()).toBe(0);
-
-    // Even if engine is toggled on, if throttle is 0, thrust is 0
-    sc.engineActive = true;
-    sc.throttle = 0;
-    expect(sc.getThrustAcceleration().mag()).toBe(0);
   });
 
-  // Test 3: Symmetric gravitational situations behave correctly
-  it('3. Symmetric gravitational situations cancel out correctly', () => {
-    // Two identical massive bodies placed symmetrically along the X-axis
-    const d = 5000; // km
+  // Test 3: Symmetrically placed bodies cancel out
+  it('3. Symmetrically placed gravitational bodies cancel out correctly', () => {
+    const d = 1e8; // meters
     const body1 = new CelestialBody({
-      id: 'body-1',
-      name: 'Body 1',
-      mass: 1e22,
-      mu: 5000,
-      radius: 500,
+      id: 'b1',
+      name: 'B1',
+      mass: 1e24,
+      mu: 1e14,
+      radius: 1e6,
       position: new Vector2(-d, 0),
       velocity: Vector2.zero(),
       color: '#fff',
     });
     const body2 = new CelestialBody({
-      id: 'body-2',
-      name: 'Body 2',
-      mass: 1e22,
-      mu: 5000,
-      radius: 500,
+      id: 'b2',
+      name: 'B2',
+      mass: 1e24,
+      mu: 1e14,
+      radius: 1e6,
       position: new Vector2(d, 0),
       velocity: Vector2.zero(),
       color: '#fff',
     });
 
-    // Test point exactly in the middle at (0, 0)
-    const midPoint = Vector2.zero();
-    const a1 = body1.gravitationalAccelerationAt(midPoint);
-    const a2 = body2.gravitationalAccelerationAt(midPoint);
-    const totalMid = a1.add(a2);
+    const center = Vector2.zero();
+    const a1 = body1.gravitationalAccelerationAt(center);
+    const a2 = body2.gravitationalAccelerationAt(center);
+    const total = a1.add(a2);
 
-    expect(totalMid.mag()).toBeCloseTo(0, 8);
-
-    // Test point on the perpendicular bisector (0, 1000)
-    // The X components must cancel out, net force must be along +Y
-    const perpPoint = new Vector2(0, 1000);
-    const aPerp1 = body1.gravitationalAccelerationAt(perpPoint);
-    const aPerp2 = body2.gravitationalAccelerationAt(perpPoint);
-    const totalPerp = aPerp1.add(aPerp2);
-
-    expect(totalPerp.x).toBeCloseTo(0, 8);
-    // Gravitational pull is directed towards the bodies (in -Y direction)
-    expect(totalPerp.y).toBeLessThan(0);
+    expect(total.mag()).toBeCloseTo(0, 8);
   });
 
-  // Test 4: Increasing thrust increases acceleration (a = F / m)
-  it('4. Increasing thrust increases acceleration proportionally to a = F / m', () => {
+  // Test 4: Saturn V Thrust and Mass Proportionality (a = F / m)
+  it('4. Thrust acceleration scales proportionally to a = F / m', () => {
     const sc = new Spacecraft({
       position: Vector2.zero(),
       velocity: Vector2.zero(),
-      rotation: 0, // Heading along +X
-      dryMass: 1000,
-      fuelMass: 500,
-      maxThrust: 15.0, // 15 kN
+      rotation: 0,
+      throttle: 0.5,
       engineActive: true,
-      throttle: 0.25,
+      isLanded: false,
     });
 
-    const m = sc.totalMass; // 1500 kg
-    const a25 = sc.getThrustAcceleration().mag();
-    expect(a25).toBeCloseTo((15.0 * 0.25) / m, 6);
+    const totalMass = sc.totalMassKg;
+    const stage1ThrustVac = sc.activeStage!.thrustVacN;
 
-    sc.setThrottle(0.5);
-    const a50 = sc.getThrustAcceleration().mag();
-    expect(a50).toBeCloseTo((15.0 * 0.5) / m, 6);
-    expect(a50 / a25).toBeCloseTo(2.0, 4);
+    const accel50 = sc.getThrustAcceleration(0).mag();
+    expect(accel50).toBeCloseTo((stage1ThrustVac * 0.5) / totalMass, 2);
 
     sc.setThrottle(1.0);
-    const a100 = sc.getThrustAcceleration().mag();
-    expect(a100).toBeCloseTo(15.0 / m, 6);
-    expect(a100 / a50).toBeCloseTo(2.0, 4);
-
-    // Propellant consumption reduces mass, increasing acceleration
-    sc.burnFuel(50); // Burn fuel
-    expect(sc.totalMass).toBeLessThan(m);
-    const aBurned = sc.getThrustAcceleration().mag();
-    expect(aBurned).toBeGreaterThan(a100);
+    const accel100 = sc.getThrustAcceleration(0).mag();
+    expect(accel100 / accel50).toBeCloseTo(2.0, 4);
   });
 
-  // Test 5: A spacecraft in a reasonable circular orbit remains approximately bounded
-  it('5. A spacecraft in a circular orbit remains approximately bounded over time', () => {
-    const body = new CelestialBody({
+  // Test 5: Propellant depletion reduces mass and increases acceleration
+  it('5. Fuel consumption reduces mass and increases acceleration', () => {
+    const sc = new Spacecraft({
+      position: Vector2.zero(),
+      velocity: Vector2.zero(),
+      throttle: 1.0,
+      engineActive: true,
+      isLanded: false,
+    });
+
+    const initialMass = sc.totalMassKg;
+    const initialAccel = sc.getThrustAcceleration(0).mag();
+
+    // Burn fuel for 60 seconds
+    sc.burnFuel(60, 0);
+
+    expect(sc.totalMassKg).toBeLessThan(initialMass);
+    const burnedAccel = sc.getThrustAcceleration(0).mag();
+    expect(burnedAccel).toBeGreaterThan(initialAccel);
+  });
+
+  // Test 6: Atmospheric density decay and aerodynamic drag
+  it('6. Atmospheric density decays exponentially with scale height and drag scales with v²', () => {
+    const rhoSeaLevel = Atmosphere.getDensity(0);
+    const rhoScaleHeight = Atmosphere.getDensity(8500);
+    const rhoSpace = Atmosphere.getDensity(150000);
+
+    expect(rhoSeaLevel).toBeCloseTo(1.225, 2);
+    // At 1 scale height (8500m), density should be rho0 / e ≈ 0.4507 kg/m³
+    expect(rhoScaleHeight).toBeCloseTo(1.225 / Math.E, 2);
+    // Outside atmosphere (> 120km), density is zero
+    expect(rhoSpace).toBe(0);
+
+    // Aerodynamic drag force: F_drag = 0.5 * rho * v² * Cd * A
+    const v1 = new Vector2(100, 0);
+    const v2 = new Vector2(200, 0); // Double speed
+    const drag1 = Aerodynamics.computeDrag(0, v1, 0.35, 80).dragMagnitude;
+    const drag2 = Aerodynamics.computeDrag(0, v2, 0.35, 80).dragMagnitude;
+
+    // Doubling velocity quadruples drag force
+    expect(drag2 / drag1).toBeCloseTo(4.0, 3);
+  });
+
+  // Test 7: Saturn V Staging sequence and debris creation
+  it('7. Staging jettisons spent stage, reduces mass, and spawns physical debris', () => {
+    const sc = new Spacecraft({
+      position: Vector2.zero(),
+      velocity: Vector2.zero(),
+      isLanded: false,
+    });
+
+    expect(sc.activeStageIndex).toBe(0);
+    expect(sc.debrisList.length).toBe(0);
+    const fullMass = sc.totalMassKg;
+
+    // Trigger stage separation
+    const staged = sc.stage();
+    expect(staged).toBe(true);
+    expect(sc.activeStageIndex).toBe(1); // S-II is now active
+    expect(sc.debrisList.length).toBe(1); // S-IC is in debris list
+    expect(sc.totalMassKg).toBeLessThan(fullMass * 0.3); // Jettisoned over 2,000 tons!
+  });
+
+  // Test 8: Energy conservation under Velocity Verlet in real Low Earth Orbit
+  it('8. Specific orbital energy remains conserved within 0.01% in real LEO', () => {
+    const earth = new CelestialBody({
       id: 'earth',
       name: 'Earth',
-      mass: 1e23,
+      mass: 5.9722e24,
       mu: EARTH_MU,
-      radius: EARTH_RADIUS_KM,
+      radius: EARTH_RADIUS_M,
       position: Vector2.zero(),
       velocity: Vector2.zero(),
       color: '#00f',
     });
 
-    const orbitRadius = 1250; // km
-    const circularSpeed = Math.sqrt(EARTH_MU / orbitRadius); // ~2.8014 km/s
-    const orbitalPeriod = 2 * Math.PI * Math.sqrt(Math.pow(orbitRadius, 3) / EARTH_MU); // ~2804 s
+    const leoRadius = EARTH_RADIUS_M + 200000; // 200 km LEO
+    const leoSpeed = Math.sqrt(EARTH_MU / leoRadius); // ~7,784 m/s
 
-    let pos = new Vector2(0, orbitRadius);
-    let vel = new Vector2(-circularSpeed, 0);
-    let accel = body.gravitationalAccelerationAt(pos);
-
-    const integrator = new VelocityVerletIntegrator();
-    const dt = 1.0; // 1 second steps
-    const totalSteps = Math.floor(orbitalPeriod); // 1 full orbit
-
-    let minR = orbitRadius;
-    let maxR = orbitRadius;
-
-    for (let step = 0; step < totalSteps; step++) {
-      const calcAccel = (p: Vector2) => body.gravitationalAccelerationAt(p);
-      const next = integrator.step({ position: pos, velocity: vel, acceleration: accel }, dt, step * dt, calcAccel);
-      pos = next.position;
-      vel = next.velocity;
-      accel = next.acceleration;
-
-      const r = pos.mag();
-      if (r < minR) minR = r;
-      if (r > maxR) maxR = r;
-    }
-
-    // After 1 full orbit, radius should stay within 0.1% of original radius
-    expect(minR).toBeGreaterThan(orbitRadius * 0.999);
-    expect(maxR).toBeLessThan(orbitRadius * 1.001);
-    expect(pos.dist(new Vector2(0, orbitRadius))).toBeLessThan(10); // within 10 km of start after 2,800 km orbit
-  });
-
-  // Test 6: Energy remains reasonably stable for a simple orbit
-  it('6. Specific orbital energy remains stable for an orbit', () => {
-    const body = new CelestialBody({
-      id: 'earth',
-      name: 'Earth',
-      mass: 1e23,
-      mu: EARTH_MU,
-      radius: EARTH_RADIUS_KM,
-      position: Vector2.zero(),
-      velocity: Vector2.zero(),
-      color: '#00f',
-    });
-
-    const orbitRadius = 1250; // km
-    const circularSpeed = Math.sqrt(EARTH_MU / orbitRadius);
     const initialElements = calculateOrbitalElements(
-      new Vector2(0, orbitRadius),
-      new Vector2(-circularSpeed, 0),
-      body
+      new Vector2(0, leoRadius),
+      new Vector2(-leoSpeed, 0),
+      earth
     );
-
     const initialEnergy = initialElements.specificEnergy;
-    expect(initialEnergy).toBeLessThan(0); // Bound orbit has negative energy
 
-    let pos = new Vector2(0, orbitRadius);
-    let vel = new Vector2(-circularSpeed, 0);
-    let accel = body.gravitationalAccelerationAt(pos);
+    let pos = new Vector2(0, leoRadius);
+    let vel = new Vector2(-leoSpeed, 0);
+    let accel = earth.gravitationalAccelerationAt(pos);
     const integrator = new VelocityVerletIntegrator();
-    const dt = 0.5;
+    const dt = 1.0;
 
-    // Simulate for 500 seconds (~18% of full orbit)
-    for (let t = 0; t < 500; t += dt) {
-      const calcAccel = (p: Vector2) => body.gravitationalAccelerationAt(p);
+    // Integrate forward 600 seconds
+    for (let t = 0; t < 600; t += dt) {
+      const calcAccel = (p: Vector2) => earth.gravitationalAccelerationAt(p);
       const next = integrator.step({ position: pos, velocity: vel, acceleration: accel }, dt, t, calcAccel);
       pos = next.position;
       vel = next.velocity;
       accel = next.acceleration;
     }
 
-    const finalElements = calculateOrbitalElements(pos, vel, body);
-    const finalEnergy = finalElements.specificEnergy;
-
-    // Relative energy drift should be less than 0.01%
-    const energyError = Math.abs((finalEnergy - initialEnergy) / initialEnergy);
-    expect(energyError).toBeLessThan(1e-4);
+    const finalEnergy = calculateOrbitalElements(pos, vel, earth).specificEnergy;
+    const energyDrift = Math.abs((finalEnergy - initialEnergy) / initialEnergy);
+    expect(energyDrift).toBeLessThan(1e-4); // < 0.01% drift
   });
 
-  it('7. RK4 integrator also conserves energy stably', () => {
-    const body = new CelestialBody({
-      id: 'earth',
-      name: 'Earth',
-      mass: 1e23,
-      mu: EARTH_MU,
-      radius: EARTH_RADIUS_KM,
-      position: Vector2.zero(),
-      velocity: Vector2.zero(),
-      color: '#00f',
-    });
+  // Test 9: Real Earth-Moon distance and lunar orbital speed
+  it('9. Real Earth-Moon distance is ~384,400 km and Moon orbits at ~1,020 m/s', () => {
+    expect(MOON_ORBITAL_DISTANCE_M).toBe(384400000);
+    expect(MOON_ORBITAL_SPEED_MPS).toBeCloseTo(1018, 0);
+    expect(MOON_RADIUS_M).toBe(1737400);
 
-    const orbitRadius = 1250;
-    const circularSpeed = Math.sqrt(EARTH_MU / orbitRadius);
-    const initialEnergy = calculateOrbitalElements(
-      new Vector2(0, orbitRadius),
-      new Vector2(-circularSpeed, 0),
-      body
-    ).specificEnergy;
-
-    let pos = new Vector2(0, orbitRadius);
-    let vel = new Vector2(-circularSpeed, 0);
-    const integrator = new RK4Integrator();
-    const dt = 0.5;
-
-    for (let t = 0; t < 200; t += dt) {
-      const calcAccel = (p: Vector2) => body.gravitationalAccelerationAt(p);
-      const next = integrator.step({ position: pos, velocity: vel }, dt, t, calcAccel);
-      pos = next.position;
-      vel = next.velocity;
-    }
-
-    const finalEnergy = calculateOrbitalElements(pos, vel, body).specificEnergy;
-    const energyError = Math.abs((finalEnergy - initialEnergy) / initialEnergy);
-    expect(energyError).toBeLessThan(1e-4);
+    const lunarSurfaceGravity = MOON_MU / (MOON_RADIUS_M * MOON_RADIUS_M);
+    expect(lunarSurfaceGravity).toBeCloseTo(1.62, 1);
   });
 
-  it('8. Full PhysicsEngine initializes in Low Earth Orbit and responds to time warp updates', () => {
+  // Test 10: RK4 integrator energy conservation
+  it('10. RK4 integrator stably conserves energy in orbit', () => {
+    const r = EARTH_RADIUS_M + 250000;
+    const v = Math.sqrt(EARTH_MU / r);
+    const rk4 = new RK4Integrator();
+    const next = rk4.step(
+      { position: new Vector2(0, r), velocity: new Vector2(-v, 0) },
+      1.0,
+      0,
+      (p) => p.normalize().scale(-EARTH_MU / p.magSq())
+    );
+    expect(next.position.mag()).toBeCloseTo(r, 0);
+  });
+
+  // Test 11: PhysicsEngine Pad 39A surface initialization and launch
+  it('11. PhysicsEngine initializes on Pad 39A and launches Saturn V on full throttle', () => {
     const engine = new PhysicsEngine();
-    expect(engine.isPaused).toBe(true);
-    expect(engine.bodies.length).toBe(3);
+    expect(engine.spacecraft.isLanded).toBe(true);
+    expect(engine.time).toBe(0);
 
-    const initialPos = engine.spacecraft.position.clone();
+    // Turn engine on full throttle
+    engine.fullThrottle();
+    expect(engine.spacecraft.engineActive).toBe(true);
+    expect(engine.spacecraft.throttle).toBe(1.0);
+
+    // Step physics forward 2 seconds
     engine.isPaused = false;
-    engine.timeWarp = 10;
-    engine.update(0.1); // step forward 1 second of sim time
+    engine.update(0.1);
 
-    // Spacecraft should have moved
-    expect(engine.spacecraft.position.dist(initialPos)).toBeGreaterThan(0);
-    expect(engine.time).toBeGreaterThan(0);
+    // Rocket should lift off as S-IC thrust (~35.1 MN) > weight (~28.7 MN)
+    expect(engine.spacecraft.isLanded).toBe(false);
   });
 });

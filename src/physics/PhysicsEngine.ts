@@ -8,36 +8,39 @@ import {
   RK4Integrator,
 } from './Integrator';
 import { calculateOrbitalElements, type OrbitalElements } from './Orbit';
+import { Atmosphere } from './Atmosphere';
+import { Aerodynamics, type AerodynamicState } from './Aerodynamics';
+import { SCENARIOS, type MissionScenario } from '../simulation/Scenario';
 import {
-  EARTH_RADIUS_KM,
+  EARTH_RADIUS_M,
   EARTH_MU,
   EARTH_MASS_KG,
-  EARTH_COLOR,
-  EARTH_ATMOSPHERE_COLOR,
-  MOON_DISTANCE_KM,
-  MOON_RADIUS_KM,
+  EARTH_ROTATION_RATE_RAD_PER_S,
+  MOON_RADIUS_M,
   MOON_MU,
   MOON_MASS_KG,
-  MOON_COLOR,
-  SUN_DISTANCE_KM,
-  SUN_RADIUS_KM,
+  MOON_ORBITAL_DISTANCE_M,
+  MOON_ORBITAL_SPEED_MPS,
+  SUN_RADIUS_M,
   SUN_MU,
   SUN_MASS_KG,
-  SUN_COLOR,
-  SUN_GLOW_COLOR,
+  SUN_EARTH_DISTANCE_M,
+  EARTH_SOLAR_ORBITAL_SPEED_MPS,
 } from './Constants';
 
 export interface PhysicsEngineState {
   time: number;
   timeWarp: number;
-  paused: boolean;
-  crashed: boolean;
+  isPaused: boolean;
+  isCrashed: boolean;
   crashedBodyName: string | null;
+  aerodynamics: AerodynamicState | null;
+  maxQReached: number; // Peak dynamic pressure recorded in ascent
 }
 
 /**
- * Main Newtonian Physics Engine.
- * Manages celestial bodies, spacecraft, N-body gravity, thrust, substepping, and orbital telemetry.
+ * Master Newtonian Physics Engine operating strictly in real SI units (m, kg, s, N).
+ * Manages N-body gravity, atmospheric drag, rocket propulsion, staging, surface physics, and time warp substepping.
  */
 export class PhysicsEngine {
   sun!: CelestialBody;
@@ -48,12 +51,16 @@ export class PhysicsEngine {
   integrator: Integrator;
   time = 0;
   timeWarp = 1;
-  isPaused = true; // Starts paused per requirement
+  isPaused = true;
   isCrashed = false;
   crashedBodyName: string | null = null;
+  activeScenarioIndex = 0;
 
-  // Maximum sub-step delta time (in seconds) to guarantee numerical stability at high time warp
+  // Maximum sub-step duration in simulation seconds
   readonly maxSubstepDt = 0.05; // 50 milliseconds
+
+  latestAerodynamics: AerodynamicState | null = null;
+  maxDynamicPressurePa = 0;
 
   constructor(integrator?: Integrator) {
     this.integrator = integrator ?? new VelocityVerletIntegrator();
@@ -61,93 +68,83 @@ export class PhysicsEngine {
   }
 
   /**
-   * Initializes or resets the entire Sun-Earth-Moon-Spacecraft system.
+   * Initializes celestial bodies and launches the default scenario (Mission 01: Launch from Pad 39A).
    */
-  initSystem(): void {
+  initSystem(scenarioIndex = 0): void {
     this.time = 0;
     this.isCrashed = false;
     this.crashedBodyName = null;
+    this.latestAerodynamics = null;
+    this.maxDynamicPressurePa = 0;
+    this.activeScenarioIndex = scenarioIndex;
 
-    // 1. Sun at coordinate origin (0, 0)
+    // 1. Sun at origin (0, 0)
     this.sun = new CelestialBody({
       id: 'sun',
       name: 'Sun',
       mass: SUN_MASS_KG,
       mu: SUN_MU,
-      radius: SUN_RADIUS_KM,
+      radius: SUN_RADIUS_M,
       position: Vector2.zero(),
       velocity: Vector2.zero(),
-      color: SUN_COLOR,
-      glowColor: SUN_GLOW_COLOR,
+      color: '#facc15',
+      glowColor: 'rgba(250, 204, 21, 0.4)',
     });
 
-    // 2. Earth: Distance 150,000 km along +X
-    // Circular orbital speed around Sun: v_E = √(μ_S / D_SE)
-    const earthSpeed = Math.sqrt(SUN_MU / SUN_DISTANCE_KM); // ~4.4294 km/s
+    // 2. Earth: Real distance 149.6M km along +X
     this.earth = new CelestialBody({
       id: 'earth',
       name: 'Earth',
       mass: EARTH_MASS_KG,
       mu: EARTH_MU,
-      radius: EARTH_RADIUS_KM,
-      position: new Vector2(SUN_DISTANCE_KM, 0),
-      velocity: new Vector2(0, earthSpeed),
-      color: EARTH_COLOR,
-      atmosphereRadius: EARTH_RADIUS_KM * 1.15,
-      atmosphereColor: EARTH_ATMOSPHERE_COLOR,
+      radius: EARTH_RADIUS_M,
+      position: new Vector2(SUN_EARTH_DISTANCE_M, 0),
+      velocity: new Vector2(0, EARTH_SOLAR_ORBITAL_SPEED_MPS),
+      color: '#38bdf8',
+      glowColor: 'rgba(56, 189, 248, 0.25)',
+      rotationRate: EARTH_ROTATION_RATE_RAD_PER_S,
+      hasAtmosphere: true,
+      atmosphereRadius: EARTH_RADIUS_M + 120000,
+      atmosphereColor: 'rgba(56, 189, 248, 0.25)',
       parentBodyId: 'sun',
     });
 
-    // 3. Moon: Distance 10,000 km from Earth along +Y
-    // Circular orbital speed around Earth: v_M = √(μ_E / D_EM)
-    const moonSpeed = Math.sqrt(EARTH_MU / MOON_DISTANCE_KM); // ~0.99045 km/s
+    // 3. Moon: Real distance 384,400 km from Earth along +Y
     this.moon = new CelestialBody({
       id: 'moon',
       name: 'Moon',
       mass: MOON_MASS_KG,
       mu: MOON_MU,
-      radius: MOON_RADIUS_KM,
-      position: this.earth.position.add(new Vector2(0, MOON_DISTANCE_KM)),
-      // Velocity = Earth's velocity + tangential orbital velocity (-moonSpeed along X)
-      velocity: this.earth.velocity.add(new Vector2(-moonSpeed, 0)),
-      color: MOON_COLOR,
+      radius: MOON_RADIUS_M,
+      position: this.earth.position.add(new Vector2(0, MOON_ORBITAL_DISTANCE_M)),
+      velocity: this.earth.velocity.add(new Vector2(-MOON_ORBITAL_SPEED_MPS, 0)),
+      color: '#cbd5e1',
+      rotationRate: (2 * Math.PI) / (27.32 * 86400), // Tidally locked
+      hasAtmosphere: false,
       parentBodyId: 'earth',
     });
 
-    // 4. Spacecraft in Low Earth Orbit (LEO)
-    // Initial altitude: 250 km (Radius: 1,250 km from Earth center)
-    const leoAltitude = 250;
-    const leoRadius = EARTH_RADIUS_KM + leoAltitude;
-    // Circular orbital velocity: v = √(μ_E / r)
-    const leoSpeed = Math.sqrt(EARTH_MU / leoRadius); // ~2.8014 km/s
+    // 4. Spacecraft configured by Scenario
+    const scenario = SCENARIOS[scenarioIndex] ?? SCENARIOS[0];
+    this.spacecraft = scenario.setup(this.earth, this.moon);
 
-    // Position spacecraft at (0, leoRadius) relative to Earth
-    const scRelPos = new Vector2(0, leoRadius);
-    // Counter-clockwise velocity is (-leoSpeed, 0)
-    const scRelVel = new Vector2(-leoSpeed, 0);
-
-    this.spacecraft = new Spacecraft({
-      position: this.earth.position.add(scRelPos),
-      velocity: this.earth.velocity.add(scRelVel),
-      rotation: Math.PI, // Facing prograde (-X)
-      throttle: 0,
-      engineActive: false,
-    });
-
-    // Pre-seed initial trail point
-    this.spacecraft.recordTrailPoint(this.earth.position, 0);
+    // Initial trail point
+    const primary = this.getDominantBody();
+    this.spacecraft.recordTrailPoint(primary.position, 0);
   }
 
-  /**
-   * Returns list of all massive celestial bodies.
-   */
   get bodies(): CelestialBody[] {
     return [this.sun, this.earth, this.moon];
   }
 
-  /**
-   * Sets numerical integrator type.
-   */
+  get currentScenario(): MissionScenario {
+    return SCENARIOS[this.activeScenarioIndex] ?? SCENARIOS[0];
+  }
+
+  loadScenario(index: number): void {
+    this.initSystem(index);
+  }
+
   setIntegrator(type: 'verlet' | 'rk4' | 'euler'): void {
     if (type === 'verlet') {
       this.integrator = new VelocityVerletIntegrator();
@@ -156,138 +153,6 @@ export class PhysicsEngine {
     } else {
       this.integrator = new SemiImplicitEulerIntegrator();
     }
-  }
-
-  /**
-   * Determines the dominant celestial body (primary body) based on gravitational Sphere of Influence (SOI).
-   */
-  getDominantBody(pos: Vector2 = this.spacecraft.position): CelestialBody {
-    // 1. Moon SOI (~1,720 km radius)
-    const distToMoon = pos.dist(this.moon.position);
-    const moonSoi = MOON_DISTANCE_KM * Math.pow(MOON_MU / EARTH_MU, 0.4); // ~1,720 km
-    if (distToMoon <= moonSoi) {
-      return this.moon;
-    }
-
-    // 2. Earth Hill Sphere / SOI (~15,500 km radius)
-    const distToEarth = pos.dist(this.earth.position);
-    const earthSoi = SUN_DISTANCE_KM * Math.pow(EARTH_MU / (3 * SUN_MU), 1 / 3); // ~15,530 km
-    if (distToEarth <= earthSoi * 1.5) {
-      return this.earth;
-    }
-
-    // 3. Otherwise Sun
-    return this.sun;
-  }
-
-  /**
-   * Computes current Keplerian orbital elements of the spacecraft relative to its dominant body.
-   */
-  getOrbitalElements(): OrbitalElements {
-    const primary = this.getDominantBody();
-    return calculateOrbitalElements(this.spacecraft.position, this.spacecraft.velocity, primary);
-  }
-
-  /**
-   * Calculates total gravitational acceleration exerted by all celestial bodies on a point.
-   */
-  calculateGravitationalAcceleration(pos: Vector2): Vector2 {
-    let totalAccel = Vector2.zero();
-    for (const body of this.bodies) {
-      const a = body.gravitationalAccelerationAt(pos);
-      totalAccel = totalAccel.add(a);
-    }
-    return totalAccel;
-  }
-
-  /**
-   * Advances the simulation by wall-clock dt seconds (scaled by timeWarp).
-   * Uses substepping to maintain numerical stability during high time warp (up to 1000x).
-   */
-  update(deltaWallTime: number): void {
-    if (this.isPaused || this.isCrashed) {
-      return;
-    }
-
-    // Cap deltaWallTime to prevent huge jumps if browser tab loses focus
-    const safeWallTime = Math.min(deltaWallTime, 0.1);
-    const totalSimDt = safeWallTime * this.timeWarp;
-
-    // Determine number of substeps needed
-    // Higher time warps need smaller substeps to keep energy drift negligible
-    const numSubsteps = Math.min(
-      Math.max(1, Math.ceil(totalSimDt / this.maxSubstepDt)),
-      400 // Safe upper bound for 60fps
-    );
-    const substepDt = totalSimDt / numSubsteps;
-
-    for (let i = 0; i < numSubsteps; i++) {
-      this.stepSubstep(substepDt);
-      if (this.isCrashed) break;
-    }
-
-    // Record trail point periodically relative to dominant body
-    const primary = this.getDominantBody();
-    this.spacecraft.recordTrailPoint(primary.position, this.time);
-  }
-
-  /**
-   * Single physics substep of duration dt.
-   */
-  private stepSubstep(dt: number): void {
-    // 1. Advance Celestial Bodies:
-    // Earth orbits Sun
-    const earthSunAccel = this.sun.gravitationalAccelerationAt(this.earth.position);
-    this.earth.velocity = this.earth.velocity.add(earthSunAccel.scale(dt));
-    this.earth.position = this.earth.position.add(this.earth.velocity.scale(dt));
-
-    // Moon orbits Earth (and Sun)
-    const moonEarthAccel = this.earth.gravitationalAccelerationAt(this.moon.position);
-    const moonSunAccel = this.sun.gravitationalAccelerationAt(this.moon.position);
-    const moonTotalAccel = moonEarthAccel.add(moonSunAccel);
-    this.moon.velocity = this.moon.velocity.add(moonTotalAccel.scale(dt));
-    this.moon.position = this.moon.position.add(this.moon.velocity.scale(dt));
-
-    // 2. Consume propellant if spacecraft engine is firing
-    this.spacecraft.burnFuel(dt);
-
-    // 3. Spacecraft integration:
-    // Acceleration function closure
-    const calcSpacecraftAccel = (pos: Vector2, _vel: Vector2, _t: number): Vector2 => {
-      const gravAccel = this.calculateGravitationalAcceleration(pos);
-      const thrustAccel = this.spacecraft.getThrustAcceleration();
-      return gravAccel.add(thrustAccel);
-    };
-
-    const nextState = this.integrator.step(
-      {
-        position: this.spacecraft.position,
-        velocity: this.spacecraft.velocity,
-        acceleration: this.spacecraft.acceleration,
-      },
-      dt,
-      this.time,
-      calcSpacecraftAccel
-    );
-
-    this.spacecraft.position = nextState.position;
-    this.spacecraft.velocity = nextState.velocity;
-    this.spacecraft.acceleration = nextState.acceleration;
-
-    // 4. Collision detection with celestial bodies
-    for (const body of this.bodies) {
-      const dist = this.spacecraft.position.dist(body.position);
-      if (dist <= body.radius) {
-        this.isCrashed = true;
-        this.crashedBodyName = body.name;
-        this.spacecraft.velocity = Vector2.zero();
-        this.spacecraft.engineActive = false;
-        this.spacecraft.throttle = 0;
-        break;
-      }
-    }
-
-    this.time += dt;
   }
 
   togglePause(): void {
@@ -299,17 +164,19 @@ export class PhysicsEngine {
   }
 
   alignPrograde(): void {
+    if (this.spacecraft.isLanded) return;
     const primary = this.getDominantBody();
     const relVel = this.spacecraft.velocity.sub(primary.velocity);
-    if (relVel.mag() > 1e-4) {
+    if (relVel.mag() > 1e-3) {
       this.spacecraft.rotation = relVel.angle();
     }
   }
 
   alignRetrograde(): void {
+    if (this.spacecraft.isLanded) return;
     const primary = this.getDominantBody();
     const relVel = this.spacecraft.velocity.sub(primary.velocity);
-    if (relVel.mag() > 1e-4) {
+    if (relVel.mag() > 1e-3) {
       this.spacecraft.rotation = relVel.angle() + Math.PI;
     }
   }
@@ -326,5 +193,239 @@ export class PhysicsEngine {
   fullThrottle(): void {
     this.spacecraft.setThrottle(1.0);
     this.spacecraft.engineActive = true;
+  }
+
+  stage(): boolean {
+    return this.spacecraft.stage();
+  }
+
+  /**
+   * Determines dominant gravitational primary body (Earth, Moon, or Sun)
+   * using exact Sphere of Influence (SOI) radii.
+   */
+  getDominantBody(pos: Vector2 = this.spacecraft.position): CelestialBody {
+    // 1. Moon SOI: r_SOI = D * (M_moon / M_earth)^0.4 ≈ 66,180 km
+    const distToMoon = pos.dist(this.moon.position);
+    const moonSoi = MOON_ORBITAL_DISTANCE_M * Math.pow(MOON_MU / EARTH_MU, 0.4);
+    if (distToMoon <= moonSoi) {
+      return this.moon;
+    }
+
+    // 2. Earth Hill Sphere: r_H = D * (M_earth / 3M_sun)^(1/3) ≈ 1.5M km
+    const distToEarth = pos.dist(this.earth.position);
+    const earthHillSphere = SUN_EARTH_DISTANCE_M * Math.pow(EARTH_MU / (3 * SUN_MU), 1 / 3);
+    if (distToEarth <= earthHillSphere) {
+      return this.earth;
+    }
+
+    // 3. Otherwise Sun
+    return this.sun;
+  }
+
+  /**
+   * Computes Keplerian orbital elements of the spacecraft relative to dominant body.
+   */
+  getOrbitalElements(): OrbitalElements {
+    const primary = this.getDominantBody();
+    return calculateOrbitalElements(this.spacecraft.position, this.spacecraft.velocity, primary);
+  }
+
+  /**
+   * Sums gravitational acceleration from all celestial bodies at position pos.
+   */
+  calculateGravitationalAcceleration(pos: Vector2): Vector2 {
+    let totalAccel = Vector2.zero();
+    for (const body of this.bodies) {
+      const a = body.gravitationalAccelerationAt(pos);
+      totalAccel = totalAccel.add(a);
+    }
+    return totalAccel;
+  }
+
+  /**
+   * Advances the simulation by wall-clock delta seconds.
+   */
+  update(deltaWallTime: number): void {
+    if (this.isPaused || this.isCrashed) {
+      return;
+    }
+
+    const safeWallTime = Math.min(deltaWallTime, 0.1);
+    const totalSimDt = safeWallTime * this.timeWarp;
+
+    // Substepping: ensure substep is small enough for stability
+    // For extreme time warp (up to 100,000x), cap substeps for 60fps performance
+    const numSubsteps = Math.min(
+      Math.max(1, Math.ceil(totalSimDt / this.maxSubstepDt)),
+      350
+    );
+    const substepDt = totalSimDt / numSubsteps;
+
+    for (let i = 0; i < numSubsteps; i++) {
+      this.stepSubstep(substepDt);
+      if (this.isCrashed) break;
+    }
+
+    const primary = this.getDominantBody();
+    this.spacecraft.recordTrailPoint(primary.position, this.time);
+  }
+
+  /**
+   * Single physics substep of duration dt in SI seconds.
+   */
+  private stepSubstep(dt: number): void {
+    // 1. Planetary dynamics:
+    // Earth orbits Sun
+    const earthSunAccel = this.sun.gravitationalAccelerationAt(this.earth.position);
+    this.earth.velocity = this.earth.velocity.add(earthSunAccel.scale(dt));
+    this.earth.position = this.earth.position.add(this.earth.velocity.scale(dt));
+    this.earth.updateRotation(dt);
+
+    // Moon orbits Earth (and Sun)
+    const moonEarthAccel = this.earth.gravitationalAccelerationAt(this.moon.position);
+    const moonSunAccel = this.sun.gravitationalAccelerationAt(this.moon.position);
+    this.moon.velocity = this.moon.velocity.add(moonEarthAccel.add(moonSunAccel).scale(dt));
+    this.moon.position = this.moon.position.add(this.moon.velocity.scale(dt));
+    this.moon.updateRotation(dt);
+
+    // 2. Spacecraft surface / flight physics:
+    const sc = this.spacecraft;
+    const primary = this.getDominantBody();
+    const altitude = primary.getAltitude(sc.position);
+
+    // Ambient pressure at altitude (0 outside Earth)
+    const ambientPressure =
+      primary.id === 'earth' ? Atmosphere.getPressure(altitude) : 0;
+
+    // If rocket is sitting on the launch pad / surface:
+    if (sc.isLanded) {
+      // Calculate pad / surface position and velocity from planet's rotation
+      sc.velocity = primary.getSurfaceVelocityAt(sc.position);
+
+      // Rocket thrust must exceed gravity to lift off
+      const thrust = sc.getCurrentThrustN(ambientPressure);
+      const weight = sc.totalMassKg * (primary.mu / (primary.radius * primary.radius));
+
+      if (thrust > weight && sc.throttle > 0.1) {
+        // Liftoff! Release launch clamps
+        sc.isLanded = false;
+        sc.landedBodyId = null;
+      } else {
+        // Still on pad: burn fuel if engines fired, but hold position locked to rotating surface
+        sc.burnFuel(dt, ambientPressure);
+        this.time += dt;
+        return;
+      }
+    }
+
+    // 3. Rocket fuel burn
+    sc.burnFuel(dt, ambientPressure);
+
+    // 4. Aerodynamic forces on spacecraft
+    let dragForce = Vector2.zero();
+    if (primary.id === 'earth' && altitude < 120000) {
+      const atmoVel = primary.getSurfaceVelocityAt(sc.position);
+      const velRelAir = sc.velocity.sub(atmoVel);
+      const aero = Aerodynamics.computeDrag(
+        altitude,
+        velRelAir,
+        sc.dragCoefficient,
+        sc.aerodynamicAreaM2
+      );
+      dragForce = aero.dragForce;
+      this.latestAerodynamics = aero;
+
+      if (aero.dynamicPressure > this.maxDynamicPressurePa) {
+        this.maxDynamicPressurePa = aero.dynamicPressure;
+      }
+    } else {
+      this.latestAerodynamics = null;
+    }
+
+    // 5. Numerical integration of spacecraft state
+    const calcAccel = (pos: Vector2, _vel: Vector2, _t: number): Vector2 => {
+      const gravAccel = this.calculateGravitationalAcceleration(pos);
+      const thrustAccel = sc.getThrustAcceleration(ambientPressure);
+      const dragAccel = dragForce.scale(1 / sc.totalMassKg);
+      return gravAccel.add(thrustAccel).add(dragAccel);
+    };
+
+    const nextState = this.integrator.step(
+      {
+        position: sc.position,
+        velocity: sc.velocity,
+        acceleration: sc.acceleration,
+      },
+      dt,
+      this.time,
+      calcAccel
+    );
+
+    sc.position = nextState.position;
+    sc.velocity = nextState.velocity;
+    sc.acceleration = nextState.acceleration;
+
+    // 6. Surface collision & touchdown detection
+    for (const body of this.bodies) {
+      const dist = sc.position.dist(body.position);
+      if (dist <= body.radius) {
+        const impactSpeed = sc.velocity.sub(body.getSurfaceVelocityAt(sc.position)).mag();
+
+        // Safe landing criteria (Moon < 5 m/s, Earth < 10 m/s with landing gear/chutes)
+        const maxSafeSpeed = body.id === 'moon' ? 5.0 : 10.0;
+
+        if (impactSpeed <= maxSafeSpeed && sc.activeStageIndex === 3) {
+          // Gentle touchdown
+          sc.isLanded = true;
+          sc.landedBodyId = body.id;
+          // Snap position to surface
+          const surfaceDir = sc.position.sub(body.position).normalize();
+          sc.position = body.position.add(surfaceDir.scale(body.radius + 1.0));
+          sc.velocity = body.getSurfaceVelocityAt(sc.position);
+          sc.throttle = 0;
+          sc.engineActive = false;
+        } else {
+          // Crash!
+          this.isCrashed = true;
+          this.crashedBodyName = body.name;
+          sc.velocity = Vector2.zero();
+          sc.engineActive = false;
+          sc.throttle = 0;
+        }
+        break;
+      }
+    }
+
+    // 7. Update separated stage debris (gravity + drag)
+    for (let d = sc.debrisList.length - 1; d >= 0; d--) {
+      const debris = sc.debrisList[d];
+      debris.timeSinceSeparation += dt;
+      debris.rotation += debris.angularVelocity * dt;
+
+      const gravA = this.calculateGravitationalAcceleration(debris.position);
+      let debrisDragA = Vector2.zero();
+
+      const distEarth = debris.position.dist(this.earth.position);
+      if (distEarth < this.earth.radius + 120000) {
+        const alt = distEarth - this.earth.radius;
+        const atmoV = this.earth.getSurfaceVelocityAt(debris.position);
+        const relV = debris.velocity.sub(atmoV);
+        const aero = Aerodynamics.computeDrag(alt, relV, 0.8, debris.width * 2);
+        debrisDragA = aero.dragForce.scale(1 / debris.mass);
+      }
+
+      debris.velocity = debris.velocity.add(gravA.add(debrisDragA).scale(dt));
+      debris.position = debris.position.add(debris.velocity.scale(dt));
+
+      // Remove debris if it impacts Earth or Moon
+      if (
+        debris.position.dist(this.earth.position) <= this.earth.radius ||
+        debris.position.dist(this.moon.position) <= this.moon.radius
+      ) {
+        sc.debrisList.splice(d, 1);
+      }
+    }
+
+    this.time += dt;
   }
 }

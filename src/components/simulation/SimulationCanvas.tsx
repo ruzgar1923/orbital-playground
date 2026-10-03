@@ -1,11 +1,11 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { PhysicsEngine } from '../../physics/PhysicsEngine';
+import { Camera, type CameraTarget } from '../../rendering/Camera';
 import { Vector2 } from '../../physics/Vector2';
 import { Starfield } from './Starfield';
-import { ParticleSystem } from './ParticleSystem';
-import { SimulationRenderer } from './SimulationRenderer';
+import { SimulationRenderer } from '../../rendering/SimulationRenderer';
 
-export type CameraTarget = 'spacecraft' | 'earth' | 'moon' | 'sun' | 'free';
+export type { CameraTarget };
 
 interface SimulationCanvasProps {
   engine: PhysicsEngine;
@@ -22,49 +22,16 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Camera state
-  const cameraRef = useRef<{
-    pos: Vector2;
-    zoom: number; // pixels per km
-    isDragging: boolean;
-    dragStart: { x: number; y: number };
-    dragCameraStart: Vector2;
-  }>({
-    pos: new Vector2(150000, 1250), // Start near Earth LEO
-    zoom: 0.22, // Good default zoom for LEO
-    isDragging: false,
-    dragStart: { x: 0, y: 0 },
-    dragCameraStart: Vector2.zero(),
-  });
-
+  // Floating-origin camera starting zoomed in on Saturn V on the pad (~4 px/meter)
+  const cameraRef = useRef<Camera>(new Camera(engine.spacecraft.position, 4.0));
   const starfieldRef = useRef<Starfield>(new Starfield(400));
-  const particleSystemRef = useRef<ParticleSystem>(new ParticleSystem());
   const animationFrameIdRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
 
-  // Keys currently held down
   const keysDownRef = useRef<Set<string>>(new Set());
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 800, height: 600 });
 
-  // Convert World (km) to Screen (px)
-  const worldToScreen = useCallback((worldPos: Vector2, width: number, height: number) => {
-    const cam = cameraRef.current;
-    return {
-      x: width / 2 + (worldPos.x - cam.pos.x) * cam.zoom,
-      y: height / 2 - (worldPos.y - cam.pos.y) * cam.zoom, // Canvas Y is inverted
-    };
-  }, []);
-
-  // Convert Screen (px) to World (km)
-  const screenToWorld = useCallback((screenX: number, screenY: number, width: number, height: number) => {
-    const cam = cameraRef.current;
-    return new Vector2(
-      cam.pos.x + (screenX - width / 2) / cam.zoom,
-      cam.pos.y - (screenY - height / 2) / cam.zoom
-    );
-  }, []);
-
-  // Update canvas size
+  // Update canvas size on window resize
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -83,16 +50,19 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Center camera on target when target changes or following
+  // Update camera target tracking
   useEffect(() => {
+    const cam = cameraRef.current;
+    cam.target = cameraTarget;
+
     if (cameraTarget === 'spacecraft') {
-      cameraRef.current.pos = engine.spacecraft.position.clone();
+      cam.pos = engine.spacecraft.position.clone();
     } else if (cameraTarget === 'earth') {
-      cameraRef.current.pos = engine.earth.position.clone();
+      cam.pos = engine.earth.position.clone();
     } else if (cameraTarget === 'moon') {
-      cameraRef.current.pos = engine.moon.position.clone();
+      cam.pos = engine.moon.position.clone();
     } else if (cameraTarget === 'sun') {
-      cameraRef.current.pos = engine.sun.position.clone();
+      cam.pos = engine.sun.position.clone();
     }
   }, [cameraTarget, engine]);
 
@@ -110,27 +80,28 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
         engine.spacecraft.toggleEngine();
       } else if (e.code === 'KeyR') {
         e.preventDefault();
-        engine.initSystem();
-        particleSystemRef.current.clear();
+        engine.initSystem(engine.activeScenarioIndex);
         cameraRef.current.pos = engine.spacecraft.position.clone();
-        cameraRef.current.zoom = 0.22;
+        cameraRef.current.zoom = 4.0;
         onCameraTargetChange('spacecraft');
       } else if (e.code === 'KeyX') {
         e.preventDefault();
-        engine.spacecraft.setThrottle(0);
-        engine.spacecraft.engineActive = false;
+        engine.cutThrottle();
       } else if (e.code === 'KeyZ') {
         e.preventDefault();
-        engine.spacecraft.setThrottle(1.0);
-        engine.spacecraft.engineActive = true;
+        engine.fullThrottle();
       } else if (e.code === 'Digit1') {
-        engine.timeWarp = 1;
+        engine.setTimeWarp(1);
       } else if (e.code === 'Digit2') {
-        engine.timeWarp = 10;
+        engine.setTimeWarp(10);
       } else if (e.code === 'Digit3') {
-        engine.timeWarp = 100;
+        engine.setTimeWarp(100);
       } else if (e.code === 'Digit4') {
-        engine.timeWarp = 1000;
+        engine.setTimeWarp(1000);
+      } else if (e.code === 'Digit5') {
+        engine.setTimeWarp(10000);
+      } else if (e.code === 'Digit6') {
+        engine.setTimeWarp(100000);
       }
     };
 
@@ -159,9 +130,9 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
       lastTimeRef.current = currentTimestamp;
       const dt = Math.min(dtMs / 1000, 0.1);
 
-      // 1. Process continuous keyboard controls
+      // 1. Process continuous attitude and throttle keys
       const keys = keysDownRef.current;
-      const rotSpeed = 2.2 * dt;
+      const rotSpeed = 1.2 * dt; // radians per second
       if (keys.has('KeyA') || keys.has('ArrowLeft')) {
         engine.spacecraft.rotate(rotSpeed);
       }
@@ -171,43 +142,25 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
 
       const throttleSpeed = 0.5 * dt;
       if (keys.has('KeyW') || keys.has('ArrowUp')) {
-        engine.spacecraft.setThrottle(engine.spacecraft.throttle + throttleSpeed);
-        engine.spacecraft.engineActive = true;
+        engine.setThrottle(engine.spacecraft.throttle + throttleSpeed);
       }
       if (keys.has('KeyS') || keys.has('ArrowDown')) {
-        engine.spacecraft.setThrottle(engine.spacecraft.throttle - throttleSpeed);
+        engine.setThrottle(engine.spacecraft.throttle - throttleSpeed);
       }
 
       // 2. Step Physics Engine
       engine.update(dt);
 
-      // Update particles
-      if (engine.spacecraft.engineActive && engine.spacecraft.currentThrustForce > 0) {
-        const nozzleOffset = engine.spacecraft.headingVector.scale(
-          -12 / Math.max(cameraRef.current.zoom, 0.05)
-        );
-        const nozzleWorld = engine.spacecraft.position.add(nozzleOffset);
-        particleSystemRef.current.emitExhaust(
-          nozzleWorld,
-          engine.spacecraft.headingVector,
-          engine.spacecraft.velocity,
-          engine.spacecraft.throttle,
-          Math.ceil(engine.timeWarp > 10 ? 1 : 3)
-        );
-      }
-      particleSystemRef.current.update(
-        dt * (engine.timeWarp > 1 ? Math.min(engine.timeWarp, 10) : 1)
-      );
-
       // 3. Update Camera Position if following a body
+      const cam = cameraRef.current;
       if (cameraTarget === 'spacecraft') {
-        cameraRef.current.pos = engine.spacecraft.position.clone();
+        cam.pos = engine.spacecraft.position.clone();
       } else if (cameraTarget === 'earth') {
-        cameraRef.current.pos = engine.earth.position.clone();
+        cam.pos = engine.earth.position.clone();
       } else if (cameraTarget === 'moon') {
-        cameraRef.current.pos = engine.moon.position.clone();
+        cam.pos = engine.moon.position.clone();
       } else if (cameraTarget === 'sun') {
-        cameraRef.current.pos = engine.sun.position.clone();
+        cam.pos = engine.sun.position.clone();
       }
 
       // 4. Render to Canvas
@@ -221,49 +174,15 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
         ctx.save();
         ctx.scale(dpr, dpr);
 
-        // Clear canvas
+        // Deep space background
         ctx.fillStyle = '#030712';
         ctx.fillRect(0, 0, width, height);
 
-        // Starfield
-        starfieldRef.current.render(
-          ctx,
-          cameraRef.current.pos.x,
-          cameraRef.current.pos.y,
-          engine.time
-        );
+        // Stars with parallax
+        starfieldRef.current.render(ctx, cam.pos.x * 1e-4, cam.pos.y * 1e-4, engine.time);
 
-        const toScreen = (wPos: Vector2) => worldToScreen(wPos, width, height);
-
-        // Celestial Orbits
-        SimulationRenderer.drawReferenceOrbits(ctx, engine, cameraRef.current, toScreen);
-
-        // Celestial Bodies (Sun, Earth, Moon)
-        SimulationRenderer.drawCelestialBodies(
-          ctx,
-          engine,
-          cameraRef.current,
-          toScreen,
-          width,
-          height
-        );
-
-        // Spacecraft Trajectory Trail
-        SimulationRenderer.drawTrajectoryTrail(ctx, engine, toScreen);
-
-        // Projected Osculating Orbit Conic Curve
-        SimulationRenderer.drawOsculatingOrbit(ctx, engine, toScreen);
-
-        // Exhaust Particles
-        particleSystemRef.current.render(ctx, toScreen);
-
-        // Spacecraft
-        SimulationRenderer.drawSpacecraft(
-          ctx,
-          engine.spacecraft,
-          cameraRef.current,
-          toScreen
-        );
+        // Master simulation rendering
+        SimulationRenderer.renderSimulation(ctx, engine, cam, width, height);
 
         // Screen banners
         if (engine.isPaused) {
@@ -275,7 +194,7 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
         ctx.restore();
       }
 
-      // Update telemetry callback periodically
+      // Update telemetry callback periodically (~20Hz)
       telemetryCounter++;
       if (telemetryCounter % 3 === 0 && onTelemetryUpdate) {
         onTelemetryUpdate();
@@ -290,38 +209,32 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
         cancelAnimationFrame(animationFrameIdRef.current);
       }
     };
-  }, [engine, cameraTarget, onCameraTargetChange, onTelemetryUpdate, worldToScreen]);
+  }, [engine, cameraTarget, onCameraTargetChange, onTelemetryUpdate]);
 
-  // Mouse wheel: Zoom in / Zoom out centered on mouse cursor
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  // Mouse wheel zoom
+  const handleWheel = useCallback(
+    (e: React.WheelEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      const canvas = canvasRef.current;
+      if (!canvas) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
 
-    const cam = cameraRef.current;
-    const worldBefore = screenToWorld(mouseX, mouseY, canvasDimensions.width, canvasDimensions.height);
+      const factor = e.deltaY < 0 ? 1.25 : 0.8;
+      cameraRef.current.zoomAt(factor, mouseX, mouseY, canvasDimensions.width, canvasDimensions.height);
+    },
+    [canvasDimensions]
+  );
 
-    const factor = e.deltaY < 0 ? 1.18 : 0.85;
-    const newZoom = Math.max(0.0001, Math.min(10.0, cam.zoom * factor));
-    cam.zoom = newZoom;
-
-    if (cameraTarget === 'free') {
-      const worldAfter = screenToWorld(mouseX, mouseY, canvasDimensions.width, canvasDimensions.height);
-      const diff = worldBefore.sub(worldAfter);
-      cam.pos = cam.pos.add(diff);
-    }
-  };
-
-  // Mouse drag: Pan camera
+  // Mouse drag pan
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (e.button === 0 || e.button === 1 || e.button === 2) {
-      cameraRef.current.isDragging = true;
-      cameraRef.current.dragStart = { x: e.clientX, y: e.clientY };
-      cameraRef.current.dragCameraStart = cameraRef.current.pos.clone();
+      const cam = cameraRef.current;
+      cam.isDragging = true;
+      cam.dragStart = { x: e.clientX, y: e.clientY };
+      cam.dragCameraStart = cam.pos.clone();
       if (cameraTarget !== 'free') {
         onCameraTargetChange('free');
       }
@@ -329,9 +242,9 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!cameraRef.current.isDragging) return;
-
     const cam = cameraRef.current;
+    if (!cam.isDragging) return;
+
     const dx = e.clientX - cam.dragStart.x;
     const dy = e.clientY - cam.dragStart.y;
 

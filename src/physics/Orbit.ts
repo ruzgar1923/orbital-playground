@@ -3,30 +3,31 @@ import { CelestialBody } from './CelestialBody';
 
 export interface OrbitalElements {
   primaryBody: CelestialBody;
-  distance: number; // km (from body center)
-  altitude: number; // km (from body surface)
-  speed: number; // km/s (relative to body)
-  radialVelocity: number; // km/s (vertical velocity)
-  tangentialVelocity: number; // km/s (horizontal velocity)
-  specificEnergy: number; // km²/s² (epsilon)
-  angularMomentum: number; // km²/s (h)
+  distance: number; // meters from body center
+  altitude: number; // meters from body surface
+  speed: number; // m/s relative to body
+  radialVelocity: number; // m/s (vertical velocity)
+  tangentialVelocity: number; // m/s (horizontal velocity)
+  specificEnergy: number; // J/kg (m²/s²)
+  angularMomentum: number; // m²/s
   eccentricity: number; // e
   eccentricityVector: Vector2;
-  semiMajorAxis: number; // a (km, negative for hyperbola)
-  periapsisDistance: number; // r_p (km)
-  periapsisAltitude: number; // h_p (km)
-  apoapsisDistance: number | null; // r_a (km, null for hyperbolic)
-  apoapsisAltitude: number | null; // h_a (km, null for hyperbolic)
-  periodSeconds: number | null; // T in seconds (null for hyperbolic)
+  semiMajorAxis: number; // meters (a)
+  periapsisDistance: number; // meters
+  periapsisAltitude: number; // meters
+  apoapsisDistance: number | null; // meters
+  apoapsisAltitude: number | null; // meters
+  periodSeconds: number | null; // seconds
   isHyperbolic: boolean;
-  argumentOfPeriapsis: number; // omega (radians)
-  trueAnomaly: number; // nu (radians)
+  isSuborbital: boolean; // Periapsis penetrates surface
+  argumentOfPeriapsis: number; // radians
+  trueAnomaly: number; // radians
   periapsisPosition: Vector2;
   apoapsisPosition: Vector2 | null;
 }
 
 /**
- * Calculates Keplerian orbital elements of a spacecraft relative to a primary celestial body.
+ * Calculates Keplerian orbital elements in real SI units (meters, m/s).
  */
 export function calculateOrbitalElements(
   scPosition: Vector2,
@@ -44,22 +45,22 @@ export function calculateOrbitalElements(
   const altitude = r - bodyRadius;
 
   // Radial velocity (vertical): v_r = (r · v) / r
-  const radialVelocity = r > 1e-6 ? relPos.dot(relVel) / r : 0;
+  const radialVelocity = r > 1e-4 ? relPos.dot(relVel) / r : 0;
 
-  // Tangential velocity (horizontal): v_t = |r × v| / r
-  const hScalar = relPos.cross(relVel); // specific angular momentum z
-  const tangentialVelocity = r > 1e-6 ? Math.abs(hScalar) / r : 0;
+  // Specific angular momentum: h = r × v
+  const hScalar = relPos.cross(relVel);
   const angularMomentum = Math.abs(hScalar);
+  const tangentialVelocity = r > 1e-4 ? angularMomentum / r : 0;
 
   // Specific orbital energy: ε = v² / 2 - μ / r
-  const specificEnergy = (v * v) / 2 - mu / Math.max(r, 1e-4);
+  const specificEnergy = (v * v) / 2 - mu / Math.max(r, 1.0);
 
   // Semi-major axis: a = -μ / (2ε)
   const semiMajorAxis = Math.abs(specificEnergy) > 1e-9 ? -mu / (2 * specificEnergy) : 0;
 
   // Eccentricity vector: e = (1 / μ) * [ (v² - μ/r) r - (r · v) v ]
   const vSq = v * v;
-  const term1 = relPos.scale(vSq - mu / Math.max(r, 1e-4));
+  const term1 = relPos.scale(vSq - mu / Math.max(r, 1.0));
   const term2 = relVel.scale(relPos.dot(relVel));
   const eccVec = term1.sub(term2).div(mu);
   const eccentricity = eccVec.mag();
@@ -78,18 +79,17 @@ export function calculateOrbitalElements(
   let periodSeconds: number | null = null;
 
   if (!isHyperbolic && eccentricity < 0.9999 && semiMajorAxis > 0) {
-    // Apoapsis distance: r_a = p / (1 - e) = a * (1 + e)
     apoapsisDistance = p / (1 - eccentricity);
     apoapsisAltitude = apoapsisDistance - bodyRadius;
-
-    // Orbital period: T = 2π √(a³ / μ)
     periodSeconds = 2 * Math.PI * Math.sqrt(Math.pow(semiMajorAxis, 3) / mu);
   }
 
-  // Argument of periapsis: angle of eccentricity vector
+  const isSuborbital = periapsisAltitude < 0;
+
+  // Argument of periapsis
   const argumentOfPeriapsis = eccVec.mag() > 1e-6 ? eccVec.angle() : 0;
 
-  // True anomaly: angle between eccentricity vector and position vector
+  // True anomaly
   let trueAnomaly = 0;
   if (eccVec.mag() > 1e-6 && r > 1e-6) {
     const cosNu = Math.max(-1, Math.min(1, relPos.dot(eccVec) / (r * eccentricity)));
@@ -99,14 +99,9 @@ export function calculateOrbitalElements(
     }
   }
 
-  // Periapsis position in space (relative to primary body pos)
-  const periapsisDir =
-    eccentricity > 1e-6
-      ? eccVec.normalize()
-      : relPos.normalize();
+  const periapsisDir = eccentricity > 1e-6 ? eccVec.normalize() : relPos.normalize();
   const periapsisPosition = primaryBody.position.add(periapsisDir.scale(periapsisDistance));
 
-  // Apoapsis position
   let apoapsisPosition: Vector2 | null = null;
   if (apoapsisDistance !== null) {
     const apoapsisDir = periapsisDir.scale(-1);
@@ -131,6 +126,7 @@ export function calculateOrbitalElements(
     apoapsisAltitude,
     periodSeconds,
     isHyperbolic,
+    isSuborbital,
     argumentOfPeriapsis,
     trueAnomaly,
     periapsisPosition,
@@ -139,23 +135,21 @@ export function calculateOrbitalElements(
 }
 
 /**
- * Generates an array of 2D coordinates (in world km) representing the projected
- * osculating conic section (ellipse or hyperbola) for rendering on the canvas.
+ * Generates an array of world-space points in meters for rendering the osculating orbit line.
  */
 export function getOsculatingOrbitPoints(
   elements: OrbitalElements,
-  samples = 120
+  samples = 140
 ): Vector2[] {
   const { primaryBody, periapsisDistance, eccentricity, argumentOfPeriapsis, isHyperbolic } =
     elements;
 
   const points: Vector2[] = [];
-  const p = periapsisDistance * (1 + eccentricity); // semi-latus rectum
+  const p = periapsisDistance * (1 + eccentricity);
 
   if (p <= 0) return points;
 
   if (!isHyperbolic) {
-    // Ellipse: sweep full true anomaly 0 to 2π
     const step = (2 * Math.PI) / samples;
     for (let i = 0; i <= samples; i++) {
       const nu = i * step;
@@ -166,8 +160,7 @@ export function getOsculatingOrbitPoints(
       points.push(new Vector2(x, y));
     }
   } else {
-    // Hyperbola: sweep between asymptotes
-    // Limit to ±85% of asymptotic true anomaly
+    // Asymptote angle: nu_inf = acos(-1 / e)
     const maxNu = Math.min(Math.PI * 0.85, Math.acos(-1 / Math.max(1.0001, eccentricity)) * 0.88);
     const startNu = -maxNu;
     const endNu = maxNu;
@@ -178,8 +171,8 @@ export function getOsculatingOrbitPoints(
       const denom = 1 + eccentricity * Math.cos(nu);
       if (denom <= 0.05) continue;
       const r = p / denom;
-      // Cap render distance to reasonable screen boundary (e.g. 10x periapsis or 50,000 km)
-      if (r > Math.max(50000, periapsisDistance * 20)) continue;
+      // Cap render distance to reasonable limit (e.g. 5x Moon distance)
+      if (r > 2e9) continue;
 
       const theta = nu + argumentOfPeriapsis;
       const x = primaryBody.position.x + r * Math.cos(theta);

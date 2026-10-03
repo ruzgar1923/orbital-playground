@@ -1,4 +1,4 @@
-import type { CameraTarget } from '../simulation/SimulationCanvas';
+import type { CameraTarget } from '../../rendering/Camera';
 import { RotateCcw, ZoomIn, ZoomOut, Rocket, Eye } from 'lucide-react';
 
 interface CameraControlsProps {

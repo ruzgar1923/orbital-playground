@@ -1,181 +1,170 @@
 # Orbital Playground
 
-A browser-based 2D orbital mechanics simulator built with React and TypeScript.
+A technically serious, educational, browser-based spaceflight simulator built with **React**, **TypeScript**, **Vite**, and **HTML5 Canvas**.
 
-Orbital Playground is an interactive educational simulation designed to explore real Newtonian physics and orbital mechanics. Rather than relying on arcade-style movement or scripted paths, spacecraft trajectories and planetary orbits are computed in real time using true gravitational vector fields and numerical integration.
-
----
-
-## Overview
-
-The simulator places the player in control of a spacecraft in a simplified Earth-Moon-Sun system. The spacecraft begins in a circular Low Earth Orbit (LEO) and can perform burns to adjust periapsis and apoapsis, transfer between celestial bodies, circularize orbits, or achieve escape velocity on hyperbolic trajectories.
-
-### Educational Scaling System
-
-In the real solar system, astronomical distances and planetary sizes span many orders of magnitude:
-- Earth's radius is ~6,371 km, while the Moon is ~384,400 km away (~60 Earth radii).
-- The Sun is ~149,600,000 km away (~23,500 Earth radii).
-
-Rendering these distances 1:1 on a single screen without logarithmic distortion would make the Earth and Moon invisible sub-pixel specks when viewing the Sun. To make the orbital dynamics immediately observable and visually engaging while strictly preserving real gravitational equations:
-
-1. **Units**: 1 simulation distance unit = 1 kilometer ($1\text{ km} = 10^3\text{ m}$); 1 time unit = 1 second.
-2. **Earth**: Radius $R_E = 1,000\text{ km}$ with standard Earth surface gravity $g_0 = 9.81\text{ m/s}^2$ ($\mu_E = 9,810\text{ km}^3/\text{s}^2$).
-3. **Moon**: Orbit radius $D_{EM} = 10,000\text{ km}$ (10 Earth radii), radius $R_M = 270\text{ km}$ ($0.27 R_E$, matching real Moon-to-Earth ratio), $\mu_M = 120.6\text{ km}^3/\text{s}^2$ (surface gravity $\approx 1.65\text{ m/s}^2$).
-4. **Sun**: Orbit radius $D_{SE} = 150,000\text{ km}$ (15 Earth-Moon distances), radius $R_S = 7,000\text{ km}$, $\mu_S = 2,943,000\text{ km}^3/\text{s}^2$.
-5. **Hill Sphere Stability**: Earth's gravitational Hill sphere radius under the Sun's tidal pull is $r_H \approx D_{SE} \sqrt[3]{\frac{\mu_E}{3\mu_S}} \approx 15,530\text{ km}$. Because the Moon orbits at $10,000\text{ km} < 15,530\text{ km}$, the Moon is stably bound inside Earth's Hill sphere without artificial constraints.
+Inspired by the interaction philosophy and physics sandbox depth of spaceflight simulators, **Orbital Playground** is built with **real SI physical units** (meters, kilograms, seconds, Newtons), scientifically documented solar system parameters, real atmospheric drag, multi-stage rocketry, and multi-body Newtonian gravity.
 
 ---
 
-## Features
+## 1. Overview & Core Philosophy
 
-- **True Newtonian Gravity**: Multi-body gravitational acceleration from Earth, Moon, and Sun calculated continuously using $F = G \frac{M m}{r^2}$.
-- **Numerical Integration**: Modular integrators including 2nd-order **Velocity Verlet** (symplectic, excellent long-term energy conservation), 4th-order **Runge-Kutta (RK4)**, and **Semi-Implicit Euler**.
-- **Real-Time Orbit Telemetry (Flight Computer)**:
-  - Altitude, Total Velocity, Vertical (Radial) Velocity, Horizontal (Tangential) Velocity.
-  - Apoapsis (AP) and Periapsis (PE) altitudes.
-  - Orbit Eccentricity ($e$), Specific Orbital Energy ($\epsilon$), and Orbital Period.
-  - Active detection and visual flagging of bound elliptical orbits vs. unbound hyperbolic escape trajectories.
-- **Dynamic Orbit Conic Projection**: Osculating Keplerian ellipse/hyperbola visualization drawn dynamically in front of the spacecraft, with AP and PE altitude pills.
-- **Variable-Mass Rocketry**:
-  - Rocket engine with throttle control (0%–100%).
-  - Propellant mass decreases as fuel burns, increasing acceleration ($a = F / m$).
-  - Particle plume exhaust with realistic dispersion and fading sparks.
-  - Prograde and Retrograde alignment autopilot buttons for precise orbital burns.
-- **Time Warp with Substepping**: Accelerate time by 1×, 10×, 100×, or 1000×. High time warps automatically subdivide integration steps ($dt_{sub} \le 0.05\text{ s}$) to prevent numerical drift.
-- **Interactive Camera**: Smooth zoom, drag-to-pan, "Follow Spacecraft" tracking mode, focus on Earth/Moon/Sun, and quick view reset.
-- **Aesthetic Engineering HUD**: Polished dark-space aesthetic, procedural twinkling parallax starfield, celestial body day/night shading, and responsive layout.
-- **Collapsible Physics Guide**: Built-in interactive educational modal detailing the mathematics and physics equations.
+Rather than normalizing physics into arbitrary game units or using pre-baked orbital curves, **Orbital Playground** computes all kinematics and dynamics directly from Newtonian differential equations:
+
+* **Real SI Units**: All internal computations use meters ($m$), kilograms ($kg$), seconds ($s$), Newtons ($N$), and meters per second ($m/s$).
+* **Real-Scale Solar System**: Real astronomical radii, masses, standard gravitational parameters ($\mu = GM$), and orbital semi-major axes for the Sun, Earth, and Moon.
+* **Surface-to-Orbit Launch**: Launch from Kennedy Space Center (Pad 39A) on Earth's surface, account for Earth's axial rotation, fly an aerodynamic gravity turn through the atmosphere, stage spent rocket tanks, and circularize into Low Earth Orbit (LEO).
+* **Deep Space & Lunar Missions**: Perform Translunar Injection (TLI), travel across the $384,400\text{ km}$ translunar void, capture into Lunar Orbit (LOI), and perform a powered lunar descent to touchdown safely on the Moon.
 
 ---
 
-## Physics & Equations
+## 2. Multi-Scale Camera & Floating-Origin Rendering
 
-### 1. Newton's Law of Universal Gravitation
-The gravitational force between two masses is:
+Astronomical spaceflight presents an extreme scale challenge:
+* A rocket component is $2\text{ to }10\text{ meters}$.
+* Low Earth Orbit altitude is $200,000\text{ meters}$ above a $6,371,000\text{ meter}$ globe.
+* The Moon orbits at $384,400,000\text{ meters}$ from Earth.
+* The Earth orbits the Sun at $149,600,000,000\text{ meters}$.
 
-$$F = G \frac{M m}{r^2}$$
+In standard 32-bit floating-point rendering, astronomical distances cause severe jitter ("z-fighting" and vertex tearing) when viewing small objects. **Orbital Playground** solves this using:
 
-The gravitational acceleration experienced by the spacecraft is independent of spacecraft mass:
+1. **Double-Precision Simulation**: All orbital mechanics and body coordinates use IEEE-754 64-bit double precision, providing sub-millimeter precision across the Earth-Moon system.
+2. **Camera-Relative Rendering (Floating Origin)**: World coordinates are translated relative to the active camera position ($\vec{r}_{render} = \vec{r}_{world} - \vec{r}_{cam}$) before conversion to viewport pixels, guaranteeing zero jitter at all zoom levels.
+3. **Multi-Scale Level of Detail (LOD)**:
+   * **Planetary LOD (Earth & Moon)**: Outer orbital views render spherical globes with rotating continents, clouds, and day/night terminators. Approaching the surface seamlessly transitions to high-resolution local terrain, Pad 39A launch towers, coastal water, and lunar impact craters.
+   * **Vehicle LOD**: Close-up view renders full technical blueprint details (engines, fins, corrugation, roll patterns). Zoomed-out views automatically render a clean orientation reticle and velocity chevron.
 
+---
+
+## 3. The Rocket: Apollo Saturn V Technical Reconstruction
+
+The starting launch vehicle is an original, technical reconstruction of the **Apollo Saturn V** super-heavy rocket, modeled directly after NASA historical documentation (SP-4029):
+
+* **Stage 1 (S-IC)**:
+  * 5 $\times$ Rocketdyne F-1 engines ($35.1\text{ MN}$ sea level, $38.7\text{ MN}$ vacuum, $I_{sp} = 263\text{ s} - 304\text{ s}$).
+  * 4 aerodynamic stabilization fins, retro-rocket fairings, black-and-white roll tracking patterns.
+  * Launch mass: $\sim 2,291\text{ metric tons}$.
+* **Stage 2 (S-II)**:
+  * 5 $\times$ Rocketdyne J-2 hydrolox engines ($5.14\text{ MN}$ vacuum, $I_{sp} = 421\text{ s}$).
+  * Corrugated tank insulation and upper roll tracking band.
+* **Stage 3 (S-IVB)**:
+  * 1 $\times$ restartable Rocketdyne J-2 engine ($1.0\text{ MN}$ vacuum, $I_{sp} = 421\text{ s}$) and Instrument Unit (IU).
+  * Performs Earth orbit insertion and Translunar Injection (TLI).
+* **Payload (Apollo CSM & LM)**:
+  * Service Module SPS engine ($91\text{ kN}$, $I_{sp} = 314\text{ s}$) and Command Module conical heat shield.
+  * Lunar Module descent engine for powered touchdown.
+
+*A technical blueprint and specification viewer is accessible directly in the simulator via the **"Vehicle Blueprint"** button.*
+
+---
+
+## 4. Physics & Equations
+
+### Gravitational Acceleration (N-Body)
 $$\vec{a}_{grav} = \sum_{i} \frac{G M_i}{\|\vec{r}_i - \vec{r}\|^3} (\vec{r}_i - \vec{r}) = \sum_{i} \frac{\mu_i}{\|\vec{r}_i - \vec{r}\|^3} (\vec{r}_i - \vec{r})$$
 
-where $\mu_i = G M_i$ is the gravitational parameter of body $i$.
+### Atmospheric Model & Aerodynamic Drag
+Based on the US Standard Atmosphere (1976) exponential scale-height model:
+$$\rho(h) = \rho_0 \exp\left(-\frac{h}{H}\right), \quad H \approx 8,500\text{ m}, \quad \rho_0 = 1.225\text{ kg/m}^3$$
+$$\vec{F}_{drag} = \frac{1}{2} \rho \|\vec{v}_{rel}\|^2 C_d A (-\hat{v}_{rel}), \quad q = \frac{1}{2} \rho \|\vec{v}_{rel}\|^2$$
+where $\vec{v}_{rel} = \vec{v} - \vec{v}_{atmosphere}$ accounts for Earth's axial rotation ($v_{surface} \approx 408\text{ m/s}$ East at Pad 39A).
 
-### 2. Rocket Propulsion & Tsiolkovsky Equation
-Spacecraft thrust acceleration follows Newton's Second Law:
+### Rocket Propulsion & Tsiolkovsky Equation
+$$\vec{a}_{thrust} = \frac{\vec{F}_{thrust}}{m_{dry} + m_{fuel}}, \quad \dot{m} = \frac{F_{thrust}}{I_{sp} \cdot g_0}$$
+$$\Delta v = I_{sp} \cdot g_0 \cdot \ln\left(\frac{m_{initial}}{m_{final}}\right)$$
 
-$$\vec{a}_{thrust} = \frac{\vec{F}_{thrust}}{m_{total}}$$
-
-where $m_{total} = m_{dry} + m_{fuel}$. As propellant is consumed at rate $\dot{m} = \frac{F_{thrust}}{I_{sp} g_0}$, total mass decreases, increasing acceleration over time according to Tsiolkovsky's rocket equation:
-
-$$\Delta v = I_{sp} g_0 \ln\left(\frac{m_{initial}}{m_{final}}\right)$$
-
-### 3. Vis-Viva Equation & Orbital Speed
-The velocity at any point along an elliptical orbit with semi-major axis $a$ is:
-
-$$v = \sqrt{\mu \left(\frac{2}{r} - \frac{1}{a}\right)}$$
-
-For a circular orbit ($r = a$), this simplifies to:
-
-$$v_{circ} = \sqrt{\frac{\mu}{r}}$$
-
-Escape velocity from radius $r$:
-
-$$v_{esc} = \sqrt{\frac{2\mu}{r}} = \sqrt{2} \cdot v_{circ}$$
-
-### 4. Specific Orbital Energy & Conic Classification
-Specific mechanical energy $\epsilon$ is conserved along an unpowered Keplerian orbit:
-
-$$\epsilon = \frac{v^2}{2} - \frac{\mu}{r} = -\frac{\mu}{2a}$$
-
-- **$\epsilon < 0$ ($e < 1$)**: Elliptical orbit (bound, periodic).
-- **$\epsilon = 0$ ($e = 1$)**: Parabolic escape trajectory.
-- **$\epsilon > 0$ ($e > 1$)**: Hyperbolic escape trajectory (unbound).
+### Vis-Viva Equation & Specific Orbital Energy
+$$v = \sqrt{\mu \left(\frac{2}{r} - \frac{1}{a}\right)}, \quad \epsilon = \frac{v^2}{2} - \frac{\mu}{r} = -\frac{\mu}{2a}$$
 
 ---
 
-## Controls
+## 5. Mission Scenarios
 
-| Key / Control | Action |
+1. **MISSION 01: Earth Orbit (Launch to LEO)**: Start on Launch Pad 39A. Ignite the S-IC first stage, fly through Max Q, stage spent tanks, and circularize into Low Earth Orbit ($h > 160\text{ km}$, $v \approx 7.8\text{ km/s}$).
+2. **MISSION 02: Translunar Injection (TLI)**: Re-ignite the S-IVB third stage in LEO to accelerate to $\sim 10.8\text{ km/s}$, escaping Earth onto a trajectory toward the Moon.
+3. **MISSION 03: Lunar Orbit Insertion (LOI)**: Arrive near the Moon on a hyperbolic flyby. Perform a retrograde burn with the Apollo Service Module SPS engine into a circular 100 km lunar orbit.
+4. **MISSION 04: Lunar Landing**: Control descent from 5,000 meters altitude above the Moon. Kill horizontal velocity, throttle the descent engine, and touch down safely at $< 4.0\text{ m/s}$ vertical speed.
+
+---
+
+## 6. Flight Controls
+
+| Key / Control | Function |
 | :--- | :--- |
-| **W** / **Up Arrow** | Increase engine throttle |
-| **S** / **Down Arrow** | Decrease engine throttle |
-| **A** / **Left Arrow** | Rotate spacecraft counter-clockwise |
-| **D** / **Right Arrow** | Rotate spacecraft clockwise |
-| **Space** | Toggle rocket engine on / off |
+| **W** / **Up Arrow** | Increase throttle (% Throttle UP) |
+| **S** / **Down Arrow** | Decrease throttle (% Throttle DOWN) |
+| **A** / **Left Arrow** | Rotate counter-clockwise (Pitch Up / West) |
+| **D** / **Right Arrow** | Rotate clockwise (Pitch Down / East) |
+| **Space** | Toggle rocket engine ignition |
+| **Stage Button** | Jettison current stage and activate next stage |
 | **X** | Cut throttle immediately (0%) |
 | **Z** | Full throttle (100%) |
-| **1, 2, 3, 4** | Time Warp: 1×, 10×, 100×, 1000× |
-| **R** | Reset simulation to initial Low Earth Orbit |
+| **1 – 6** | Time Warp: 1×, 10×, 100×, 1,000×, 10,000×, 100,000× |
+| **R** | Reset current scenario to initial state |
 | **Mouse Left Drag** | Pan camera across the solar system |
-| **Mouse Wheel** | Zoom in / out centered on cursor |
-
-*On-screen touch controls, throttle presets, and Prograde/Retrograde alignment buttons are also available on the HUD for mobile and mouse-only play.*
+| **Mouse Wheel** | Smooth zoom centered on cursor |
 
 ---
 
-## Technology
-
-- **React 19**
-- **TypeScript 5.8**
-- **Vite 8** with `@tailwindcss/vite`
-- **Tailwind CSS v4** for clean UI HUD styling
-- **HTML5 2D Canvas** with High-DPI (`devicePixelRatio`) support
-- **Lucide React** for aerospace telemetry iconography
-- **Vitest** for automated unit testing
-
----
-
-## Project Structure
+## 7. Project Architecture
 
 ```
 orbital-playground/
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml            # CI: install, lint, test, build
-│       └── deploy.yml        # GitHub Pages automated deployment
+│       ├── ci.yml                          # Continuous Integration (lint, test, build)
+│       └── deploy.yml                      # Automated GitHub Pages deployment
+├── public/
+│   └── assets/rockets/
+│       └── saturn_v_n1_reference.png       # Blueprint visual reference
 ├── src/
 │   ├── physics/
-│   │   ├── Vector2.ts        # 2D immutable vector math
-│   │   ├── Constants.ts      # Physical constants and scaling definitions
-│   │   ├── CelestialBody.ts  # Astronomical body & gravity calculations
-│   │   ├── Spacecraft.ts     # Spacecraft state, propulsion, variable mass
-│   │   ├── Integrator.ts     # Velocity Verlet, RK4, Semi-Implicit Euler
-│   │   ├── Orbit.ts          # Keplerian elements & conic curve generator
-│   │   ├── PhysicsEngine.ts  # Master N-body engine & substepping loop
+│   │   ├── Constants.ts                    # Real SI values (IAU, CODATA, NASA SP-4029)
+│   │   ├── Vector2.ts                      # Double-precision 2D vector math
+│   │   ├── CelestialBody.ts                # Astronomical bodies & rotational kinematics
+│   │   ├── Atmosphere.ts                   # US Standard Atmosphere 1976 barometric model
+│   │   ├── Aerodynamics.ts                 # Dynamic pressure (Max Q) & drag calculation
+│   │   ├── Staging.ts                      # Multi-stage rocket & spent debris physics
+│   │   ├── Spacecraft.ts                   # Saturn V flight vehicle & variable mass
+│   │   ├── Integrator.ts                   # Symplectic Velocity Verlet, RK4, Euler
+│   │   ├── Orbit.ts                        # Keplerian elements & conic trajectory generator
+│   │   ├── PhysicsEngine.ts                # N-body simulation & substepping loop
 │   │   └── __tests__/
-│   │       ├── PhysicsEngine.test.ts # Automated physics accuracy tests
-│   │       └── Orbit.test.ts         # Orbital math & hyperbolic tests
+│   │       ├── PhysicsEngine.test.ts       # 11 automated real-scale physics tests
+│   │       └── Orbit.test.ts               # Real-scale orbital math tests
+│   ├── rendering/
+│   │   ├── Camera.ts                       # Floating origin camera-relative rendering
+│   │   ├── PlanetRenderer.ts               # 3-tier LOD spherical Earth/Moon renderer
+│   │   ├── RocketRenderer.ts               # Vector Saturn V blueprint drawing & plumes
+│   │   └── SimulationRenderer.ts           # Canvas pipeline & orbit visualizer
+│   ├── simulation/
+│   │   └── Scenario.ts                     # Mission scenarios & objective checks
 │   ├── components/
 │   │   ├── simulation/
-│   │   │   ├── SimulationCanvas.tsx   # Canvas loop & viewport management
-│   │   │   ├── SimulationRenderer.ts # Drawing routines & visual layers
-│   │   │   ├── Starfield.ts          # Procedural stars with parallax
-│   │   │   └── ParticleSystem.ts     # Rocket exhaust particle plume
+│   │   │   ├── SimulationCanvas.tsx        # High-DPI canvas & event loop
+│   │   │   └── Starfield.ts                # Parallax deep-space starfield
 │   │   └── panels/
-│   │       ├── FlightComputer.tsx    # HUD telemetry panel
-│   │       ├── SimulationControls.tsx# Play/Pause, Warp, Integrator selector
-│   │       ├── CameraControls.tsx    # Camera targeting & zoom
-│   │       ├── PhysicsGuideModal.tsx # Educational theory modal
-│   │       └── KeyboardHelp.tsx      # Hotkey reference modal
+│   │       ├── FlightComputer.tsx          # Real-time aerospace HUD (altitude, speed, Max Q)
+│   │       ├── StageControl.tsx            # SFS-style staging sequence panel
+│   │       ├── MissionPanel.tsx            # Objective status & scenario switcher
+│   │       ├── SimulationControls.tsx      # Time warp (up to 100,000x), Pause, Reset
+│   │       ├── CameraControls.tsx          # Camera targeting & zoom
+│   │       ├── VehicleViewerModal.tsx      # Blueprint modal with reference image
+│   │       ├── PhysicsGuideModal.tsx       # Educational theory & formulas modal
+│   │       └── KeyboardHelp.tsx            # Flight controls cheatsheet
 │   ├── utils/
-│   │   └── formatters.ts     # Aerospace unit formatters (km, m/s, G, time)
-│   ├── App.tsx               # Main application container
-│   ├── main.tsx              # React DOM entrypoint
-│   └── index.css             # Tailwind base styles
-├── vite.config.ts            # Vite configuration with Vitest & GH Pages base
-└── package.json
+│   │   └── formatters.ts                   # Aerospace units formatters
+│   ├── App.tsx                             # Top-level application layout
+│   ├── main.tsx                            # React DOM mount
+│   └── index.css                           # Tailwind CSS setup
+├── CREDITS.md                              # Attribution & NASA documentation sources
+├── LICENSE                                 # MIT License
+└── vite.config.ts                          # Vite & GitHub Pages base configuration
 ```
 
 ---
 
-## Running Locally
+## 8. Running Locally
 
-### Prerequisites
-- Node.js (v20+ recommended)
-- npm (v10+)
-
-### Setup
 ```bash
 # 1. Clone repository
 git clone https://github.com/<username>/orbital-playground.git
@@ -192,43 +181,42 @@ Open `http://localhost:5173` in your browser.
 
 ---
 
-## Testing
+## 9. Automated Testing & Verification
 
-Automated tests verify physical accuracy and numerical stability:
-
+Run the full automated test suite:
 ```bash
 npm run test
 ```
 
-### Verified Physics Properties:
-1. **Inverse-Square Law**: Gravitational acceleration decreases as $1/r^2$.
-2. **Zero-Thrust Invariance**: No artificial acceleration without active thrust.
-3. **Gravitational Symmetry**: Symmetrically placed masses cancel out correctly.
-4. **Thrust & Mass Proportionality**: $a = F / m$ scales linearly with throttle and inversely with total mass.
-5. **Orbital Boundedness**: A circular orbit integrated over a full period remains bounded within 0.1% radius deviation.
-6. **Energy Conservation**: Specific orbital energy remains conserved within 0.01% error under Velocity Verlet and RK4 integration.
-7. **Hyperbolic Escape Trajectory**: Correct detection and parameterization when spacecraft velocity exceeds escape velocity.
-
-### Production Build & Linting
-```bash
-# Run linter
-npm run lint
-
-# Build production bundle
-npm run build
-```
+### Verified Properties:
+1. **Gravitational Falloff**: Gravitational acceleration decreases strictly with $1/r^2$.
+2. **Zero-Thrust Invariance**: No artificial acceleration occurs without engine thrust.
+3. **Gravitational Symmetry**: Equal masses cancel at equilibrium points.
+4. **Thrust & Mass Scaling**: $a = F / m$ scales linearly with throttle and inversely with vehicle mass.
+5. **Propellant Depletion**: Fuel mass consumption increases rocket acceleration over time.
+6. **Atmospheric Density**: Barometric exponential decay matches scale height ($H = 8.5\text{ km}$); drag scales with $v^2$.
+7. **Physical Staging**: Stage separation drops stage mass, advances active engine, and creates independent physical debris.
+8. **Orbital Energy Conservation**: Specific energy remains conserved within $0.01\%$ over long-duration Velocity Verlet orbits.
+9. **Real Earth-Moon Scale**: Moon semi-major axis is $384,400\text{ km}$, orbital speed is $\sim 1,018\text{ m/s}$, and surface gravity is $1.62\text{ m/s}^2$.
+10. **RK4 Numerical Stability**: 4th-order Runge-Kutta integrator stably integrates orbital paths.
+11. **Liftoff Threshold**: Rocket remains locked on Pad 39A until S-IC thrust exceeds total vehicle weight ($F_{thrust} > m \cdot g$).
 
 ---
 
-## Future Improvements
+## 10. Limitations & Future Plans
 
-- Transfer orbit / Hohmann maneuver planning nodes (interactive $\Delta v$ gizmos).
-- Atmospheric drag modeling for low Earth entry (aerobraking).
-- Trajectory prediction incorporating lunar gravity assists (Patched Conics or N-body predictor line).
-- Sound effects for rocket engines, staging, and ambient space music.
+* **2D Orbital Plane**: Current implementation models the Earth-Moon system in a 2D orbital plane. Future updates can expand to full 3D orbital inclination and nodal precession.
+* **Atmospheric Reentry Heating**: Future versions can model aerodynamic heating and shock compression during high-speed Earth reentry.
+* **Hohmann Maneuver Planner**: Interactive $\Delta v$ planning nodes on the predicted trajectory line.
 
 ---
 
-## License
+## 11. Credits & Attribution
 
-MIT License. Feel free to use, modify, and distribute for educational or personal projects.
+See [CREDITS.md](CREDITS.md) for full documentation citations, including NASA SP-4029, NASA SP-4206, and public-domain IAU / JPL Horizons astronomical datasets.
+
+---
+
+## 12. License
+
+MIT License. See [LICENSE](LICENSE) for details.
