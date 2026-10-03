@@ -361,12 +361,14 @@ export class RocketRenderer {
   ): void {
     ctx.save();
 
-    // Plume expands dramatically in vacuum (underexpanded nozzle)
-    const vacFactor = Math.max(1.0, 3.2 - (ambientPressurePa / 101325) * 2.2);
+    // Plume expands in vacuum (underexpanded nozzle), defensively clamped
+    const safePressure = Math.max(0, Math.min(101325, Number.isFinite(ambientPressurePa) ? ambientPressurePa : 0));
+    const vacFactor = Math.max(1.0, Math.min(3.2, 3.2 - (safePressure / 101325) * 2.2));
+    const safeThrottle = Math.max(0, Math.min(1.0, Number.isFinite(throttle) ? throttle : 0));
 
     if (stageIdx === 0) {
       // S-IC 5x F-1 Kerosene/LOX Flame: Massive fiery golden-orange plume with shock diamonds
-      const plumeLength = (35 + Math.random() * 8) * throttle;
+      const plumeLength = Math.max(0.5, (35 + Math.random() * 8) * safeThrottle);
       const plumeWidth = 9.5 * vacFactor;
 
       const grad = ctx.createLinearGradient(0, 0, -plumeLength, 0);

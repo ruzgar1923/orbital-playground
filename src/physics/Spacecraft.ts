@@ -64,6 +64,7 @@ export class Spacecraft {
   engineActive = false;
   isLanded = true; // Starts on launch pad
   landedBodyId: string | null = 'earth';
+  landedSurfaceAngle: number | null = null;
 
   stages: RocketStage[] = [];
   activeStageIndex = 0;

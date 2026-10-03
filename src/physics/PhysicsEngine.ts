@@ -246,11 +246,24 @@ export class PhysicsEngine {
    * Advances the simulation by wall-clock delta seconds.
    */
   update(deltaWallTime: number): void {
-    if (this.isPaused || this.isCrashed) {
+    if (this.isPaused) {
       return;
     }
 
     const safeWallTime = Math.min(deltaWallTime, 0.1);
+
+    if (this.isCrashed) {
+      // Planet continues moving, wreckage stays attached to crashed surface
+      const crashedBody = this.bodies.find((b) => b.name === this.crashedBodyName) ?? this.earth;
+      const relPos = this.spacecraft.position.sub(crashedBody.position);
+      const curAngle = Math.atan2(relPos.y, relPos.x);
+      const newAngle = curAngle + crashedBody.rotationRate * safeWallTime;
+      this.spacecraft.position = crashedBody.position.add(
+        new Vector2(Math.cos(newAngle), Math.sin(newAngle)).scale(crashedBody.radius + 1.0)
+      );
+      this.spacecraft.velocity = crashedBody.getSurfaceVelocityAt(this.spacecraft.position);
+      return;
+    }
     const totalSimDt = safeWallTime * this.timeWarp;
 
     // Substepping: ensure substep is small enough for stability
@@ -299,20 +312,34 @@ export class PhysicsEngine {
 
     // If rocket is sitting on the launch pad / surface:
     if (sc.isLanded) {
-      // Calculate pad / surface position and velocity from planet's rotation
-      sc.velocity = primary.getSurfaceVelocityAt(sc.position);
-
+      const landedBody = this.bodies.find((b) => b.id === sc.landedBodyId) ?? primary;
       // Rocket thrust must exceed gravity to lift off
       const thrust = sc.getCurrentThrustN(ambientPressure);
-      const weight = sc.totalMassKg * (primary.mu / (primary.radius * primary.radius));
+      const weight = sc.totalMassKg * (landedBody.mu / (landedBody.radius * landedBody.radius));
 
-      if (thrust > weight && sc.throttle > 0.1) {
+      if (thrust > weight && sc.throttle > 0.1 && sc.engineActive) {
         // Liftoff! Release launch clamps
         sc.isLanded = false;
         sc.landedBodyId = null;
+        sc.landedSurfaceAngle = null;
       } else {
-        // Still on pad: burn fuel if engines fired, but hold position locked to rotating surface
+        // Still on pad: burn fuel if engines fired, and keep position locked to rotating surface
         sc.burnFuel(dt, ambientPressure);
+
+        if (sc.landedSurfaceAngle === null) {
+          const relPos = sc.position.sub(landedBody.position);
+          sc.landedSurfaceAngle = Math.atan2(relPos.y, relPos.x) - landedBody.rotationAngle;
+        }
+
+        const currentSurfaceAngle = sc.landedSurfaceAngle + landedBody.rotationAngle;
+        const surfaceNorm = new Vector2(Math.cos(currentSurfaceAngle), Math.sin(currentSurfaceAngle));
+        const surfaceDist = landedBody.radius + 1.0;
+
+        sc.position = landedBody.position.add(surfaceNorm.scale(surfaceDist));
+        sc.velocity = landedBody.getSurfaceVelocityAt(sc.position);
+        sc.rotation = currentSurfaceAngle;
+        sc.acceleration = Vector2.zero();
+
         this.time += dt;
         return;
       }
@@ -378,17 +405,22 @@ export class PhysicsEngine {
           // Gentle touchdown
           sc.isLanded = true;
           sc.landedBodyId = body.id;
-          // Snap position to surface
-          const surfaceDir = sc.position.sub(body.position).normalize();
-          sc.position = body.position.add(surfaceDir.scale(body.radius + 1.0));
+          const relPos = sc.position.sub(body.position);
+          sc.landedSurfaceAngle = Math.atan2(relPos.y, relPos.x) - body.rotationAngle;
+          const currentSurfaceAngle = sc.landedSurfaceAngle + body.rotationAngle;
+          const surfaceNorm = new Vector2(Math.cos(currentSurfaceAngle), Math.sin(currentSurfaceAngle));
+          sc.position = body.position.add(surfaceNorm.scale(body.radius + 1.0));
           sc.velocity = body.getSurfaceVelocityAt(sc.position);
+          sc.rotation = currentSurfaceAngle;
           sc.throttle = 0;
           sc.engineActive = false;
         } else {
           // Crash!
           this.isCrashed = true;
           this.crashedBodyName = body.name;
-          sc.velocity = Vector2.zero();
+          const surfaceDir = sc.position.sub(body.position).normalize();
+          sc.position = body.position.add(surfaceDir.scale(body.radius + 1.0));
+          sc.velocity = body.getSurfaceVelocityAt(sc.position);
           sc.engineActive = false;
           sc.throttle = 0;
         }

@@ -58,6 +58,8 @@ export const SCENARIOS: MissionScenario[] = [
         engineActive: false,
         isLanded: true,
       });
+      sc.landedBodyId = 'earth';
+      sc.landedSurfaceAngle = padAngleRad;
       return sc;
     },
     checkCompletion(sc: Spacecraft, earth: CelestialBody) {

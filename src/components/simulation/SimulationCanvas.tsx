@@ -126,72 +126,92 @@ export const SimulationCanvas: React.FC<SimulationCanvasProps> = ({
     lastTimeRef.current = performance.now();
 
     const render = (currentTimestamp: number) => {
-      const dtMs = currentTimestamp - lastTimeRef.current;
-      lastTimeRef.current = currentTimestamp;
-      const dt = Math.min(dtMs / 1000, 0.1);
+      try {
+        const dtMs = currentTimestamp - lastTimeRef.current;
+        lastTimeRef.current = currentTimestamp;
+        const dt = Math.min(dtMs / 1000, 0.1);
 
-      // 1. Process continuous attitude and throttle keys
-      const keys = keysDownRef.current;
-      const rotSpeed = 1.2 * dt; // radians per second
-      if (keys.has('KeyA') || keys.has('ArrowLeft')) {
-        engine.spacecraft.rotate(rotSpeed);
-      }
-      if (keys.has('KeyD') || keys.has('ArrowRight')) {
-        engine.spacecraft.rotate(-rotSpeed);
-      }
-
-      const throttleSpeed = 0.5 * dt;
-      if (keys.has('KeyW') || keys.has('ArrowUp')) {
-        engine.setThrottle(engine.spacecraft.throttle + throttleSpeed);
-      }
-      if (keys.has('KeyS') || keys.has('ArrowDown')) {
-        engine.setThrottle(engine.spacecraft.throttle - throttleSpeed);
-      }
-
-      // 2. Step Physics Engine
-      engine.update(dt);
-
-      // 3. Update Camera Position if following a body
-      const cam = cameraRef.current;
-      if (cameraTarget === 'spacecraft') {
-        cam.pos = engine.spacecraft.position.clone();
-      } else if (cameraTarget === 'earth') {
-        cam.pos = engine.earth.position.clone();
-      } else if (cameraTarget === 'moon') {
-        cam.pos = engine.moon.position.clone();
-      } else if (cameraTarget === 'sun') {
-        cam.pos = engine.sun.position.clone();
-      }
-
-      // 4. Render to Canvas
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        const dpr = window.devicePixelRatio || 1;
-        const rect = canvas.getBoundingClientRect();
-        const width = rect.width;
-        const height = rect.height;
-
-        ctx.save();
-        ctx.scale(dpr, dpr);
-
-        // Deep space background
-        ctx.fillStyle = '#030712';
-        ctx.fillRect(0, 0, width, height);
-
-        // Stars with parallax
-        starfieldRef.current.render(ctx, cam.pos.x * 1e-4, cam.pos.y * 1e-4, engine.time);
-
-        // Master simulation rendering
-        SimulationRenderer.renderSimulation(ctx, engine, cam, width, height);
-
-        // Screen banners
-        if (engine.isPaused) {
-          SimulationRenderer.drawPausedBanner(ctx, width);
-        } else if (engine.isCrashed) {
-          SimulationRenderer.drawCrashedBanner(ctx, engine.crashedBodyName, width);
+        // 1. Process continuous attitude and throttle keys
+        const keys = keysDownRef.current;
+        const rotSpeed = 1.2 * dt; // radians per second
+        if (keys.has('KeyA') || keys.has('ArrowLeft')) {
+          engine.spacecraft.rotate(rotSpeed);
+        }
+        if (keys.has('KeyD') || keys.has('ArrowRight')) {
+          engine.spacecraft.rotate(-rotSpeed);
         }
 
-        ctx.restore();
+        const throttleSpeed = 0.5 * dt;
+        if (keys.has('KeyW') || keys.has('ArrowUp')) {
+          engine.setThrottle(engine.spacecraft.throttle + throttleSpeed);
+        }
+        if (keys.has('KeyS') || keys.has('ArrowDown')) {
+          engine.setThrottle(engine.spacecraft.throttle - throttleSpeed);
+        }
+
+        // 2. Step Physics Engine
+        engine.update(dt);
+
+        // 3. Update Camera Position if following a body
+        const cam = cameraRef.current;
+        if (cameraTarget === 'spacecraft') {
+          cam.pos = engine.spacecraft.position.clone();
+        } else if (cameraTarget === 'earth') {
+          cam.pos = engine.earth.position.clone();
+        } else if (cameraTarget === 'moon') {
+          cam.pos = engine.moon.position.clone();
+        } else if (cameraTarget === 'sun') {
+          cam.pos = engine.sun.position.clone();
+        }
+
+        // 4. Render to Canvas
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const dpr = window.devicePixelRatio || 1;
+          const rect = canvas.getBoundingClientRect();
+          const width = rect.width;
+          const height = rect.height;
+
+          ctx.save();
+          ctx.scale(dpr, dpr);
+
+          // Deep space background
+          ctx.fillStyle = '#030712';
+          ctx.fillRect(0, 0, width, height);
+
+          // Stars with parallax
+          starfieldRef.current.render(ctx, cam.pos.x * 1e-4, cam.pos.y * 1e-4, engine.time);
+
+          // Master simulation rendering
+          SimulationRenderer.renderSimulation(ctx, engine, cam, width, height);
+
+          // Diagnostics overlay (Dev HUD)
+          SimulationRenderer.drawDiagnosticOverlay(ctx, engine, width, height);
+
+          // Screen banners
+          if (engine.isPaused) {
+            SimulationRenderer.drawPausedBanner(ctx, width);
+          } else if (engine.isCrashed) {
+            SimulationRenderer.drawCrashedBanner(ctx, engine.crashedBodyName, width);
+          }
+
+          ctx.restore();
+        }
+      } catch (err) {
+        console.error('Simulation render frame error caught:', err);
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.save();
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
+          ctx.fillRect(16, 16, 400, 50);
+          ctx.strokeStyle = '#fca5a5';
+          ctx.strokeRect(16, 16, 400, 50);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 11px monospace';
+          ctx.fillText('DIAGNOSTIC NOTICE: Render exception safely recovered', 24, 34);
+          ctx.fillText(String(err).slice(0, 50), 24, 52);
+          ctx.restore();
+        }
       }
 
       // Update telemetry callback periodically (~20Hz)

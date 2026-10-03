@@ -4,6 +4,7 @@ import { RocketRenderer } from './RocketRenderer';
 import { PlanetRenderer } from './PlanetRenderer';
 import { getOsculatingOrbitPoints } from '../physics/Orbit';
 import { formatDistance } from '../utils/formatters';
+import { Atmosphere } from '../physics/Atmosphere';
 
 export class SimulationRenderer {
   /**
@@ -16,11 +17,16 @@ export class SimulationRenderer {
     width: number,
     height: number
   ): void {
-    // Earth around Sun
+    // Earth around Sun (only if sunScreen is near viewport and radius is reasonable)
     const sunScreen = camera.worldToScreen(engine.sun.position, width, height);
     const earthOrbitRadiusPx = 1.495978707e11 * camera.zoom;
+    const distSunToCamPx = Math.hypot(sunScreen.x - width / 2, sunScreen.y - height / 2);
 
-    if (earthOrbitRadiusPx > 5 && earthOrbitRadiusPx < 30000) {
+    if (
+      earthOrbitRadiusPx > 5 &&
+      earthOrbitRadiusPx < 10000 &&
+      distSunToCamPx < earthOrbitRadiusPx + 1500
+    ) {
       ctx.save();
       ctx.strokeStyle = 'rgba(56, 189, 248, 0.1)';
       ctx.lineWidth = 1;
@@ -34,8 +40,13 @@ export class SimulationRenderer {
     // Moon around Earth
     const earthScreen = camera.worldToScreen(engine.earth.position, width, height);
     const moonOrbitRadiusPx = 384400000 * camera.zoom;
+    const distEarthToCamPx = Math.hypot(earthScreen.x - width / 2, earthScreen.y - height / 2);
 
-    if (moonOrbitRadiusPx > 5 && moonOrbitRadiusPx < 30000) {
+    if (
+      moonOrbitRadiusPx > 5 &&
+      moonOrbitRadiusPx < 10000 &&
+      distEarthToCamPx < moonOrbitRadiusPx + 1500
+    ) {
       ctx.save();
       ctx.strokeStyle = 'rgba(203, 213, 225, 0.12)';
       ctx.lineWidth = 1;
@@ -218,7 +229,7 @@ export class SimulationRenderer {
     // 5. Spacecraft & separated stage debris
     const primary = engine.getDominantBody();
     const altitude = primary.getAltitude(engine.spacecraft.position);
-    const ambientPressure = primary.id === 'earth' && altitude < 120000 ? 101325 * Math.exp(-altitude / 8500) : 0;
+    const ambientPressure = primary.id === 'earth' ? Atmosphere.getPressure(altitude) : 0;
 
     RocketRenderer.render(
       ctx,
@@ -265,6 +276,44 @@ export class SimulationRenderer {
       width / 2,
       50
     );
+    ctx.restore();
+  }
+
+  static drawDiagnosticOverlay(
+    ctx: CanvasRenderingContext2D,
+    engine: PhysicsEngine,
+    width: number,
+    _height: number
+  ): void {
+    const x = Math.max(410, Math.min(width - 200, width / 2 - 200));
+    const y = 64;
+    ctx.save();
+    ctx.font = '10px ui-monospace, SFMono-Regular, monospace';
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.fillRect(x, y, 175, 96);
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, 175, 96);
+
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 10px ui-monospace, SFMono-Regular, monospace';
+    ctx.fillText('DIAGNOSTICS', x + 8, y + 14);
+
+    const hasEarth = Number.isFinite(engine.earth.position.x) && engine.earth.mass > 0;
+    const hasMoon = Number.isFinite(engine.moon.position.x) && engine.moon.mass > 0;
+    const hasShip = Number.isFinite(engine.spacecraft.position.x) && engine.spacecraft.totalMassKg > 0;
+    const physicsOk = Number.isFinite(engine.time);
+
+    ctx.font = '10px ui-monospace, SFMono-Regular, monospace';
+    ctx.fillStyle = '#10b981';
+    ctx.fillText('Renderer:   OK', x + 8, y + 28);
+    ctx.fillText(`Physics:    ${physicsOk ? 'OK' : 'FAIL'}`, x + 8, y + 40);
+    ctx.fillText(`Earth:      ${hasEarth ? 'OK' : 'FAIL'}`, x + 8, y + 52);
+    ctx.fillText(`Moon:       ${hasMoon ? 'OK' : 'FAIL'}`, x + 8, y + 64);
+    ctx.fillText(`Spacecraft: ${hasShip ? 'OK' : 'FAIL'}`, x + 8, y + 76);
+
+    ctx.fillStyle = engine.isPaused ? '#f59e0b' : '#10b981';
+    ctx.fillText(`Simulation: ${engine.isPaused ? 'PAUSED' : 'RUNNING'}`, x + 8, y + 88);
     ctx.restore();
   }
 }

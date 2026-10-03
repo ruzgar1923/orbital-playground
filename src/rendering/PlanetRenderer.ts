@@ -329,40 +329,85 @@ export class PlanetRenderer {
   ): void {
     ctx.save();
 
-    // 1. Draw large curved planetary surface
-    ctx.beginPath();
-    ctx.arc(screenPos.x, screenPos.y, radiusPx, 0, Math.PI * 2);
+    // Mathematically bounded planetary horizon across the viewport
+    // Eliminates astronomical 25-million-pixel ctx.arc calls which crash Canvas 2D rasterizers
+    const cx = screenPos.x;
+    const cy = screenPos.y;
+    const numSamples = 40;
+    const xMin = -80;
+    const xMax = width + 80;
+    const step = (xMax - xMin) / numSamples;
 
-    if (body.id === 'earth') {
-      ctx.fillStyle = '#065f46'; // Coastal grassy terrain
-      ctx.fill();
+    const horizonPoints: { x: number; y: number }[] = [];
+    const rSq = radiusPx * radiusPx;
 
-      // Atmospheric blue sky gradient near horizon
-      const skyGrad = ctx.createRadialGradient(
-        screenPos.x,
-        screenPos.y,
-        radiusPx,
-        screenPos.x,
-        screenPos.y,
-        radiusPx + 3000 * camera.zoom
-      );
-      skyGrad.addColorStop(0, 'rgba(56, 189, 248, 0.4)');
-      skyGrad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+    for (let i = 0; i <= numSamples; i++) {
+      const x = xMin + i * step;
+      const dx = x - cx;
+      const dxSq = dx * dx;
+      if (rSq >= dxSq) {
+        const dy = Math.sqrt(rSq - dxSq);
+        // If planet center is below viewport, surface is top of circle (cy - dy)
+        // If planet center is above viewport, surface is bottom of circle (cy + dy)
+        const y = cy > height / 2 ? cy - dy : cy + dy;
+        horizonPoints.push({ x, y });
+      }
+    }
 
-      ctx.save();
-      ctx.fillStyle = skyGrad;
+    if (horizonPoints.length >= 2) {
+      // 1. Atmospheric sky glow above horizon (Earth only)
+      if (body.hasAtmosphere) {
+        ctx.save();
+        const toCam = new Vector2(width / 2 - cx, height / 2 - cy).normalize();
+        const atmoDepthPx = Math.min(height * 2, Math.max(120, 60000 * camera.zoom));
+        const midH = horizonPoints[Math.floor(horizonPoints.length / 2)];
+
+        const skyGrad = ctx.createLinearGradient(
+          midH.x,
+          midH.y,
+          midH.x + toCam.x * atmoDepthPx,
+          midH.y + toCam.y * atmoDepthPx
+        );
+        skyGrad.addColorStop(0, 'rgba(56, 189, 248, 0.45)');
+        skyGrad.addColorStop(0.35, 'rgba(56, 189, 248, 0.2)');
+        skyGrad.addColorStop(0.7, 'rgba(56, 189, 248, 0.06)');
+        skyGrad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+
+        ctx.fillStyle = skyGrad;
+        ctx.fillRect(0, 0, width, height);
+        ctx.restore();
+      }
+
+      // 2. Draw curved surface polygon
       ctx.beginPath();
-      ctx.arc(screenPos.x, screenPos.y, radiusPx + 3000 * camera.zoom, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+      ctx.moveTo(horizonPoints[0].x, horizonPoints[0].y);
+      for (let i = 1; i < horizonPoints.length; i++) {
+        ctx.lineTo(horizonPoints[i].x, horizonPoints[i].y);
+      }
 
-      // 2. Render Kennedy Space Center Launch Pad 39A
+      // Close polygon downward or upward toward planet core
+      if (cy > height / 2) {
+        ctx.lineTo(xMax, height + 150);
+        ctx.lineTo(xMin, height + 150);
+      } else {
+        ctx.lineTo(xMax, -150);
+        ctx.lineTo(xMin, -150);
+      }
+      ctx.closePath();
+
+      ctx.fillStyle = body.id === 'earth' ? '#065f46' : '#64748b'; // Lush coastal green or lunar regolith
+      ctx.fill();
+
+      // Sharp horizon terrain rim
+      ctx.strokeStyle = body.id === 'earth' ? '#047857' : '#94a3b8';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+    // 3. Render surface site structures (Launch Pad 39A on Earth, craters on Moon)
+    if (body.id === 'earth') {
       PlanetRenderer.renderLaunchPad39A(ctx, body, camera, width, height);
     } else {
-      // Moon surface: Cratered regolith horizon
-      ctx.fillStyle = '#64748b';
-      ctx.fill();
-
       PlanetRenderer.renderLunarSurfaceDetails(ctx, body, camera, width, height);
     }
 
@@ -379,8 +424,8 @@ export class PlanetRenderer {
     width: number,
     height: number
   ): void {
-    // Pad 39A location on Earth surface
-    const padAngle = (KSC_PAD_LATITUDE_DEG * Math.PI) / 180;
+    // Pad 39A location on Earth surface, rotating in lockstep with Earth
+    const padAngle = (KSC_PAD_LATITUDE_DEG * Math.PI) / 180 + earth.rotationAngle;
     const padWorld = earth.position.add(
       new Vector2(Math.cos(padAngle), Math.sin(padAngle)).scale(earth.radius)
     );
